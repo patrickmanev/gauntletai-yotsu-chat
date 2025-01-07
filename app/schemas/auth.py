@@ -1,9 +1,26 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, validator
+import re
 
 class UserRegister(BaseModel):
     email: EmailStr
     password: str
     display_name: str
+
+    @validator('password')
+    def validate_password(cls, v):
+        requirements = [
+            (len(v) >= 8, "be at least 8 characters long"),
+            (bool(re.search(r'[A-Z]', v)), "contain at least one uppercase letter"),
+            (bool(re.search(r'[a-z]', v)), "contain at least one lowercase letter"),
+            (bool(re.search(r'\d', v)), "contain at least one number"),
+            (bool(re.search(r'[!@#$%^&*(),.?":{}|<>]', v)), "contain at least one special character.")
+        ]
+        
+        failed = [req for (check, req) in requirements if not check]
+        if failed:
+            criteria = ", ".join(failed)
+            raise ValueError(f"Password does not meet security criteria. Password must: {criteria}")
+        return v
 
 class UserLogin(BaseModel):
     email: EmailStr

@@ -26,7 +26,7 @@ async def test_auth_flow(client: AsyncClient):
     print("\n1. Testing registration...")
     response = await client.post("/api/auth/register", json={
         "email": "test@example.com",
-        "password": "password123",
+        "password": "Password1234!",
         "display_name": "Test User"
     })
     print(f"Registration response: {response.status_code}")
@@ -38,7 +38,7 @@ async def test_auth_flow(client: AsyncClient):
     print("\n2. Testing login...")
     response = await client.post("/api/auth/login", json={
         "email": "test@example.com",
-        "password": "password123"
+        "password": "Password1234!"
     })
     print(f"Login response: {response.status_code}")
     print(json.dumps(response.json(), indent=2))
@@ -92,7 +92,7 @@ async def test_invalid_credentials(client: AsyncClient):
     # Test non-existent email
     response = await client.post("/api/auth/login", json={
         "email": "nonexistent@example.com",
-        "password": "password123"
+        "password": "Password1234!"
     })
     assert response.status_code == 401
     assert "Invalid email or password" in response.json()["detail"]
@@ -101,7 +101,7 @@ async def test_invalid_credentials(client: AsyncClient):
     # First register a user
     await client.post("/api/auth/register", json={
         "email": "test@example.com",
-        "password": "password123",
+        "password": "Password1234!",
         "display_name": "Test User"
     })
     
@@ -123,14 +123,14 @@ async def test_token_security(client: AsyncClient):
         # Register and login
         register_response = await client.post("/api/auth/register", json={
             "email": "test@example.com",
-            "password": "password123",
+            "password": "Password1234!",
             "display_name": "Test User"
         })
         totp_secret = register_response.json()["totp_secret"]
         
         login_response = await client.post("/api/auth/login", json={
             "email": "test@example.com",
-            "password": "password123"
+            "password": "Password1234!"
         })
         login_data = login_response.json()
         
@@ -158,7 +158,7 @@ async def test_duplicate_registration(client: AsyncClient):
     # Register first user
     response = await client.post("/api/auth/register", json={
         "email": "test@example.com",
-        "password": "password123",
+        "password": "Password1234!",
         "display_name": "Test User"
     })
     assert response.status_code == 201
@@ -166,7 +166,7 @@ async def test_duplicate_registration(client: AsyncClient):
     # Try to register same email again
     response = await client.post("/api/auth/register", json={
         "email": "test@example.com",
-        "password": "differentpassword",
+        "password": "Password1234!",
         "display_name": "Different User"
     })
     assert response.status_code == 400
@@ -177,12 +177,12 @@ async def test_special_characters(client: AsyncClient):
     test_cases = [
         {
             "email": "test.user+tag@example.com",
-            "password": "password123!@#$%^&*()",
+            "password": "Password1234!",
             "display_name": "Test 👨‍💻 User"
         },
         {
             "email": "üser@example.com",
-            "password": "password123",
+            "password": "Password1234!",
             "display_name": "Über User 🚀"
         }
     ]
@@ -204,13 +204,13 @@ async def test_token_validation(client: AsyncClient):
     # Register and get initial tokens
     await client.post("/api/auth/register", json={
         "email": "test@example.com",
-        "password": "password123",
+        "password": "Password1234!",
         "display_name": "Test User"
     })
     
     login_response = await client.post("/api/auth/login", json={
         "email": "test@example.com",
-        "password": "password123"
+        "password": "Password1234!"
     })
     tokens = login_response.json()
     

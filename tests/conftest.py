@@ -111,13 +111,13 @@ async def access_token(client: AsyncClient) -> str:
     user_id = await create_test_user(
         client,
         email="test@example.com",
-        password="password123",
+        password="Password1234!",
         display_name="Test User"
     )
     
     response = await client.post("/api/auth/login", json={
         "email": "test@example.com",
-        "password": "password123"
+        "password": "Password1234!"
     })
     assert response.status_code == 200
     data = response.json()
@@ -129,13 +129,13 @@ async def second_user_token(client: AsyncClient) -> Dict[str, Any]:
     user_id = await create_test_user(
         client,
         email="test2@example.com",
-        password="password123",
+        password="Password1234!",
         display_name="Test User 2"
     )
     
     response = await client.post("/api/auth/login", json={
         "email": "test2@example.com",
-        "password": "password123"
+        "password": "Password1234!"
     })
     assert response.status_code == 200
     data = response.json()

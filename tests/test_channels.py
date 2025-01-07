@@ -63,21 +63,21 @@ async def test_channel_operations(client: AsyncClient):
     user1 = await register_test_user(
         client,
         email="user1@example.com",
-        password="password123",
+        password="Password1234!",
         display_name="User One"
     )
     
     user2 = await register_test_user(
         client,
         email="user2@example.com",
-        password="password123",
+        password="Password1234!",
         display_name="User Two"
     )
     
     user3 = await register_test_user(
         client,
         email="user3@example.com",
-        password="password123",
+        password="Password1234!",
         display_name="User Three"
     )
     
