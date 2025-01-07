@@ -86,7 +86,7 @@ async def test_channel_operations(client: AsyncClient):
     response = await client.post(
         "/api/channels",
         json={
-            "name": "Test Channel",
+            "name": "Test-Channel",
             "type": "public",
             "initial_members": [user2["user_id"]]
         },

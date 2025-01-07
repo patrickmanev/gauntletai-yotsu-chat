@@ -9,7 +9,7 @@ import json
 
 router = APIRouter(prefix="/reactions", tags=["reactions"])
 
-@router.post("/messages/{message_id}", response_model=ReactionResponse)
+@router.post("/messages/{message_id}", response_model=ReactionResponse, status_code=201)
 async def add_reaction(
     message_id: int,
     reaction: ReactionCreate,

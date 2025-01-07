@@ -8,7 +8,7 @@ import json
 
 router = APIRouter(prefix="/messages", tags=["messages"])
 
-@router.post("/channels/{channel_id}", response_model=MessageResponse)
+@router.post("/channels/{channel_id}", response_model=MessageResponse, status_code=201)
 async def create_message(
     channel_id: int,
     message: MessageCreate,

@@ -149,7 +149,7 @@ async def test_channel(client: AsyncClient, access_token: str) -> Dict[str, Any]
     """Create a test channel and return its data"""
     response = await client.post(
         "/api/channels",
-        json={"name": "Test Channel"},
+        json={"name": "Test-Channel"},
         headers={"Authorization": f"Bearer {access_token}"}
     )
     assert response.status_code == 201
@@ -166,7 +166,7 @@ async def thread_with_reply(client: AsyncClient, access_token: str, test_channel
         json={"content": "Parent message"},
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert parent_response.status_code == 200
+    assert parent_response.status_code == 201
     parent_data = parent_response.json()
     
     # Create reply
@@ -178,7 +178,7 @@ async def thread_with_reply(client: AsyncClient, access_token: str, test_channel
         },
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert reply_response.status_code == 200
+    assert reply_response.status_code == 201
     reply_data = reply_response.json()
     
     return {
@@ -196,5 +196,5 @@ async def test_message(client: AsyncClient, access_token: str, test_channel: Dic
         json={"content": "Test message for reactions"},
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     return response.json() 

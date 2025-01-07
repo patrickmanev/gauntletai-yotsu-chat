@@ -161,7 +161,7 @@ async def test_message_websocket_events(
             json={"content": "Test message"},
             headers={"Authorization": f"Bearer {access_token}"}
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
         message_data = response.json()
         
         # Verify message.created event was sent
@@ -228,7 +228,7 @@ async def test_reaction_websocket_events(
             json={"emoji": "👍"},
             headers={"Authorization": f"Bearer {access_token}"}
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
         
         # Verify reaction.added event was sent
         assert any(
@@ -280,7 +280,7 @@ async def test_thread_message_websocket_events(
             json={"content": "Parent message"},
             headers={"Authorization": f"Bearer {access_token}"}
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
         parent_data = response.json()
         
         # Verify parent message.created event
@@ -296,7 +296,7 @@ async def test_thread_message_websocket_events(
             json={"content": "Thread message", "parent_id": parent_data["message_id"]},
             headers={"Authorization": f"Bearer {access_token}"}
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
         thread_data = response.json()
         
         # Verify thread message.created event

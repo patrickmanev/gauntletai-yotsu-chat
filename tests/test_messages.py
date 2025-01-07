@@ -28,7 +28,7 @@ async def test_message_operations(
         json={"content": "Test message"},
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     message_data = response.json()
     
     # Get messages
@@ -76,7 +76,7 @@ async def test_create_message_in_thread(client: AsyncClient, access_token: str, 
         json={"content": "Parent message"},
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert parent_response.status_code == 200
+    assert parent_response.status_code == 201
     parent_data = parent_response.json()
     
     # Create reply
@@ -88,7 +88,7 @@ async def test_create_message_in_thread(client: AsyncClient, access_token: str, 
         },
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert reply_response.status_code == 200
+    assert reply_response.status_code == 201
     reply_data = reply_response.json()
     assert reply_data["parent_id"] == parent_data["message_id"]
     
@@ -125,7 +125,7 @@ async def test_thread_message_validation(client: AsyncClient, access_token: str,
         json={"content": "Parent message"},
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert parent_response.status_code == 200
+    assert parent_response.status_code == 201
     parent_data = parent_response.json()
     
     # Try to create a reply to a reply (should fail)
@@ -137,7 +137,7 @@ async def test_thread_message_validation(client: AsyncClient, access_token: str,
         },
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert reply_response.status_code == 200
+    assert reply_response.status_code == 201
     reply_data = reply_response.json()
     
     nested_response = await client.post(
@@ -238,7 +238,7 @@ async def test_delete_reply_keeps_deleted_parent_if_other_replies_exist(
         },
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert reply2_response.status_code == 200
+    assert reply2_response.status_code == 201
     reply2_data = reply2_response.json()
     
     # Delete parent message (should be marked as deleted)

@@ -9,10 +9,10 @@ async def test_basic_reactions(client: AsyncClient, access_token: str, test_mess
     
     # Test adding reactions
     test_cases = [
-        ("👍", 200),  # Basic emoji
-        ("🎉", 200),  # Another basic emoji
+        ("👍", 201),  # Basic emoji
+        ("🎉", 201),  # Another basic emoji
         ("👍", 400),  # Duplicate emoji from same user
-        ("🤖", 200),  # Third emoji
+        ("🤖", 201),  # Third emoji
     ]
     
     for emoji, expected_status in test_cases:
@@ -37,14 +37,14 @@ async def test_reaction_limits(client: AsyncClient, access_token: str, test_mess
     message_id = test_message["message_id"]
     
     # Add maximum allowed emojis
-    emojis = ["👍", "🎉", "❤️", "😀", "😂", "😊", "😎", "😍", "🤔", "🤗", "😴", "🤓"]
+    emojis = ["👍", "🎉", "❤️", "😀", "😂", "😊", "😎", "😍", "🤔", "🤗", "🤓", "🤖"]
     for emoji in emojis:
         response = await client.post(
             f"/api/reactions/messages/{message_id}",
             json={"emoji": emoji},
             headers={"Authorization": f"Bearer {access_token}"}
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
     
     # Try to add one more (should fail)
     response = await client.post(
@@ -65,7 +65,7 @@ async def test_multi_user_reactions(client: AsyncClient, access_token: str, seco
         json={"emoji": "👍"},
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     
     # Second user adds same reaction
     response = await client.post(
@@ -73,7 +73,7 @@ async def test_multi_user_reactions(client: AsyncClient, access_token: str, seco
         json={"emoji": "👍"},
         headers={"Authorization": f"Bearer {second_user_token['access_token']}"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     
     # Verify reaction count
     response = await client.get(
@@ -94,7 +94,7 @@ async def test_reactions_cleanup_on_message_delete(client: AsyncClient, access_t
         json={"content": "Message to be deleted"},
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert message_response.status_code == 200
+    assert message_response.status_code == 201
     message_id = message_response.json()["message_id"]
     
     # Add some reactions
@@ -105,7 +105,7 @@ async def test_reactions_cleanup_on_message_delete(client: AsyncClient, access_t
             json={"emoji": emoji},
             headers={"Authorization": f"Bearer {access_token}"}
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
     
     # Verify reactions exist
     response = await client.get(
@@ -138,7 +138,7 @@ async def test_reactions_cleanup_on_thread_parent_delete(client: AsyncClient, ac
         json={"content": "Parent message"},
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert parent_response.status_code == 200
+    assert parent_response.status_code == 201
     parent_data = parent_response.json()
     
     # Create reply
@@ -150,7 +150,7 @@ async def test_reactions_cleanup_on_thread_parent_delete(client: AsyncClient, ac
         },
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert reply_response.status_code == 200
+    assert reply_response.status_code == 201
     reply_data = reply_response.json()
     
     # Add reactions to both parent and reply
@@ -160,7 +160,7 @@ async def test_reactions_cleanup_on_thread_parent_delete(client: AsyncClient, ac
             json={"emoji": "👍"},
             headers={"Authorization": f"Bearer {access_token}"}
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
     
     # Delete parent message (should be marked as deleted but not actually deleted)
     delete_response = await client.delete(
