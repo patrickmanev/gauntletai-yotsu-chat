@@ -1,9 +1,9 @@
 from datetime import datetime, timedelta, UTC
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 import bcrypt
 from jose import jwt
 import pyotp
-from fastapi import HTTPException, Security, Depends, status
+from fastapi import HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import secrets
 from fastapi import WebSocket

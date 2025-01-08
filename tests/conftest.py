@@ -1,16 +1,12 @@
 import pytest
-from pytest import FixtureRequest
 from typing import AsyncGenerator, Dict, Any, Union
 import pytest_asyncio
 from httpx import AsyncClient
 import os
-from httpx import ASGITransport
 import aiosqlite
 import asyncio
-import time
 from fastapi.testclient import TestClient
 from fastapi.routing import APIRoute, APIWebSocketRoute
-from contextlib import suppress
 
 # Set test mode for the entire test session
 os.environ["TEST_MODE"] = "true"

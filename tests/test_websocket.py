@@ -1,7 +1,6 @@
 import pytest
 import asyncio
-from typing import Dict, Any, List, AsyncGenerator
-from fastapi import WebSocket
+from typing import Dict, Any, List
 from httpx import AsyncClient
 from app.core.ws_core import manager as ws_manager
 import json
