@@ -6,6 +6,7 @@ import QRCodeWrapper from './qr-code';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { setTokens } from '@/lib/auth';
 
 type AuthMode = 'initial' | 'signin' | 'signup' | 'totp';
 
@@ -130,8 +131,7 @@ export default function AuthPage() {
             setLastMode('signin');
             setMode('totp');
           } else {
-            localStorage.setItem('access_token', data.access_token);
-            localStorage.setItem('refresh_token', data.refresh_token);
+            setTokens(data.access_token, data.refresh_token);
             router.push('/client');
           }
         } else {
@@ -162,8 +162,7 @@ export default function AuthPage() {
       
       if (response.ok) {
         const data = await response.json();
-        localStorage.setItem('access_token', data.access_token);
-        localStorage.setItem('refresh_token', data.refresh_token);
+        setTokens(data.access_token, data.refresh_token);
         router.push('/client');
       } else {
         setValidationMessage("TOTP code is invalid. Please try again.");
@@ -225,14 +224,13 @@ export default function AuthPage() {
                 value={totpCode}
                 onChange={setTotpCode}
                 maxLength={6}
-                render={({ slots }) => (
-                  <InputOTPGroup>
-                    {slots.map((slot, idx) => (
-                      <InputOTPSlot key={idx} {...slot} index={idx} />
-                    ))}
-                  </InputOTPGroup>
-                )}
-              />
+              >
+                <InputOTPGroup>
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <InputOTPSlot key={i} index={i} />
+                  ))}
+                </InputOTPGroup>
+              </InputOTP>
             </div>
 
             {validationMessage && (

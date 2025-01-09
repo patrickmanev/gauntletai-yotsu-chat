@@ -3,7 +3,7 @@ from httpx import AsyncClient
 from typing import Dict, Any
 import os
 import asyncio
-from conftest import register_test_user
+from tests.conftest import register_test_user
 
 pytestmark = pytest.mark.asyncio
 

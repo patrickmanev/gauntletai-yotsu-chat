@@ -8,6 +8,8 @@ class UserRegister(BaseModel):
 
     @validator('display_name')
     def validate_display_name(cls, v):
+        # Strip any leading/trailing whitespace
+        v = v.strip()
         if len(v) > 25:
             raise ValueError("Display name must not exceed 25 characters")
         if not re.match(r"^[a-zA-Z']+(?:\s[a-zA-Z']+)*$", v):
@@ -35,14 +37,13 @@ class UserLogin(BaseModel):
     password: str
 
 class UserResponse(BaseModel):
-    user_id: int
-    totp_secret: str
+    temp_token: str
     totp_uri: str
 
 class TokenResponse(BaseModel):
     access_token: str | None = None
-    temp_token: str | None = None
     refresh_token: str | None = None
+    temp_token: str | None = None
 
 class TOTPVerify(BaseModel):
     totp_code: str

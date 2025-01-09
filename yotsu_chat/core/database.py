@@ -3,68 +3,68 @@ import os
 from typing import AsyncGenerator
 from pathlib import Path
 
-# Environment modes
+# We only care about TEST_MODE - everything else is DEV by default
 TEST_MODE = os.getenv("TEST_MODE", "0") == "1"
-DEV_MODE = os.getenv("DEV_MODE", "1") == "1"  # Default to DEV_MODE if no mode is set
-PROD_MODE = os.getenv("PROD_MODE", "0") == "1"
+print(f"[DEBUG] Database - TEST_MODE: {TEST_MODE}")
 
-# Ensure only one mode is active
-if sum([TEST_MODE, DEV_MODE, PROD_MODE]) != 1:
-    # Default to DEV_MODE if no mode or multiple modes are set
-    TEST_MODE = False
-    DEV_MODE = True
-    PROD_MODE = False
+# Database paths with explicit Windows path handling
+DB_ROOT = Path("data/db").resolve()
+TEST_DB_PATH = (DB_ROOT / "test" / "test_yotsu_chat.db").resolve()
+DEV_DB_PATH = (DB_ROOT / "dev" / "dev_yotsu_chat.db").resolve()
 
-# Database paths
-DB_ROOT = Path("data/db")
-TEST_DB_PATH = DB_ROOT / "test" / "test_yotsu_chat.db"
-DEV_DB_PATH = DB_ROOT / "dev" / "dev_yotsu_chat.db"
-PROD_DB_PATH = DB_ROOT / "prod" / "prod_yotsu_chat.db"
+# Set the database path - only two options
+DATABASE_URL = str(TEST_DB_PATH if TEST_MODE else DEV_DB_PATH)
+print(f"[DEBUG] Database - Using {'TEST' if TEST_MODE else 'DEV'} database at: {DATABASE_URL}")
 
-# Set the database path based on mode
-if TEST_MODE:
-    DATABASE_URL = str(TEST_DB_PATH)
-elif DEV_MODE:
-    DATABASE_URL = str(DEV_DB_PATH)
-else:  # PROD_MODE
-    DATABASE_URL = str(PROD_DB_PATH)
-
-# Ensure database directory exists
+# Ensure database directories exist
 DB_ROOT.mkdir(parents=True, exist_ok=True)
 TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 DEV_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-PROD_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+def validate_database_operation():
+    """Validate that we're operating on the correct database"""
+    current_db = Path(DATABASE_URL).resolve()
+    
+    # The only validation we need is to prevent test operations on dev database
+    if TEST_MODE and current_db != TEST_DB_PATH:
+        raise RuntimeError(f"TEST_MODE operations attempted on development database: {current_db}")
 
 async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
+    """Get database connection with proper mode validation"""
+    validate_database_operation()
+    print(f"[DEBUG] Database - Opening connection to: {DATABASE_URL}")
     db = await aiosqlite.connect(DATABASE_URL)
     try:
-        # Enable foreign keys
         await db.execute("PRAGMA foreign_keys = ON")
-        # Make sqlite return dictionaries instead of tuples
         db.row_factory = aiosqlite.Row
         yield db
     finally:
         await db.close()
+        print(f"[DEBUG] Database - Closed connection to: {DATABASE_URL}")
 
 async def init_db(force: bool = False):
-    """Initialize the database with all required tables.
-    Args:
-        force: If True, drop and recreate all tables even if not in test mode.
-    """
-    # Determine if we should drop tables
-    # Drop tables if:
-    # 1. We're in TEST_MODE (always drop for tests)
-    # 2. force is True (manual override)
-    # Never drop tables in PROD_MODE regardless of force parameter
-    should_drop = (TEST_MODE or force) and not PROD_MODE
+    """Initialize the database with all required tables."""
+    print(f"[DEBUG] Database - Initializing database at: {DATABASE_URL}")
+    print(f"[DEBUG] Database - Mode: {'TEST' if TEST_MODE else 'DEV'}")
+    
+    # Extra validation for database operations
+    validate_database_operation()
+    
+    # In TEST_MODE, we always drop tables
+    # In DEV_MODE, we only drop if force=True
+    should_drop = TEST_MODE or force
+    
+    if should_drop and not TEST_MODE:
+        print("[WARNING] Forced table drop requested on DEV database!")
+    
+    print(f"[DEBUG] Database - Should drop tables: {should_drop}")
     
     async with aiosqlite.connect(DATABASE_URL) as db:
         try:
-            # Enable foreign keys
             await db.execute("PRAGMA foreign_keys = ON")
             
             if should_drop:
-                print(f"Dropping all tables in {DATABASE_URL}")
+                print(f"[DEBUG] Database - Dropping all tables")
                 # Drop existing tables in reverse order of dependencies
                 await db.execute("DROP TABLE IF EXISTS reactions")
                 await db.execute("DROP TABLE IF EXISTS attachments")
@@ -72,6 +72,8 @@ async def init_db(force: bool = False):
                 await db.execute("DROP TABLE IF EXISTS channels_members")
                 await db.execute("DROP TABLE IF EXISTS channels")
                 await db.execute("DROP TABLE IF EXISTS users")
+            
+            print(f"[DEBUG] Database - Creating tables if they don't exist")
             
             # Create users table
             await db.execute("""

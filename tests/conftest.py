@@ -1,18 +1,21 @@
+import os
+# Set test mode for the entire test session
+os.environ["TEST_MODE"] = "1"
+
 import pytest
 from typing import AsyncGenerator, Dict, Any, Union
 import pytest_asyncio
 from httpx import AsyncClient
-import os
 import aiosqlite
 import asyncio
 from fastapi.testclient import TestClient
 from fastapi.routing import APIRoute, APIWebSocketRoute
-
-# Set test mode for the entire test session
-os.environ["TEST_MODE"] = "true"
+import pyotp
+import jwt
 
 from yotsu_chat.main import app
 from yotsu_chat.core.database import init_db
+from yotsu_chat.core.auth import SECRET_KEY, ALGORITHM
 
 pytest_plugins = ["pytest_asyncio"]
 
@@ -31,13 +34,21 @@ def event_loop():
 
 async def cleanup_database():
     """Helper to clean up the database"""
-    if os.path.exists("yotsu_chat.db"):
+    test_db_path = "data/db/test/test_yotsu_chat.db"
+    test_db_dir = os.path.dirname(test_db_path)
+    
+    # Ensure the directory exists
+    os.makedirs(test_db_dir, exist_ok=True)
+    
+    # Clean up any existing database
+    if os.path.exists(test_db_path):
         for _ in range(3):  # Try up to 3 times
             try:
-                # Close any open connections
-                async with aiosqlite.connect("yotsu_chat.db") as db:
-                    await db.close()
-                os.remove("yotsu_chat.db")
+                # Close any open connections and delete the file
+                db = await aiosqlite.connect(test_db_path)
+                await db.close()
+                await asyncio.sleep(0.1)  # Give the OS time to release the file
+                os.remove(test_db_path)
                 break
             except Exception as e:
                 print(f"Failed to cleanup database: {e}")
@@ -49,22 +60,12 @@ async def initialized_app(event_loop):
     # Clean up any existing database
     await cleanup_database()
     
-    # Initialize fresh database
-    await init_db()
-    
-    # Debug: Print all registered routes
-    print("\nRegistered routes:")
-    for route in app.routes:
-        if isinstance(route, APIRoute):
-            print(f"  {route.path} [{','.join(route.methods)}]")
-        elif isinstance(route, APIWebSocketRoute):
-            print(f"  {route.path} [WebSocket]")
-        else:
-            print(f"  {route.path} [Unknown type: {type(route)}]")
+    # Initialize the database
+    await init_db(force=True)
     
     yield app
     
-    # Clean up after test
+    # Clean up after the test
     await cleanup_database()
 
 @pytest.fixture(scope="function")
@@ -98,8 +99,30 @@ async def create_test_user(client: Union[TestClient, AsyncClient], email: str, p
             "display_name": display_name
         })
     assert response.status_code == 201
-    data = response.json()
-    return data["user_id"]
+    temp_token = response.json()["temp_token"]
+    totp_uri = response.json()["totp_uri"]
+    totp_secret = pyotp.parse_uri(totp_uri).secret
+    
+    # Complete registration with 2FA
+    totp = pyotp.TOTP(totp_secret)
+    if isinstance(client, AsyncClient):
+        verify_response = await client.post(
+            "/api/auth/verify-2fa",
+            json={"totp_code": totp.now()},
+            headers={"Authorization": f"Bearer {temp_token}"}
+        )
+    else:
+        verify_response = client.post(
+            "/api/auth/verify-2fa",
+            json={"totp_code": totp.now()},
+            headers={"Authorization": f"Bearer {temp_token}"}
+        )
+    assert verify_response.status_code == 200
+    tokens = verify_response.json()
+    
+    # Extract user_id from access token
+    payload = jwt.decode(tokens["access_token"], SECRET_KEY, algorithms=[ALGORITHM])
+    return payload["user_id"]
 
 async def register_test_user(
     client: AsyncClient,
@@ -115,18 +138,25 @@ async def register_test_user(
         "display_name": display_name
     })
     assert response.status_code == 201, f"Registration failed: {response.text}"
-    user_data = response.json()
+    temp_token = response.json()["temp_token"]
+    totp_uri = response.json()["totp_uri"]
+    totp_secret = pyotp.parse_uri(totp_uri).secret
     
-    # 2. Login
-    response = await client.post("/api/auth/login", json={
-        "email": email,
-        "password": password
-    })
-    assert response.status_code == 200, f"Login failed: {response.text}"
-    tokens = response.json()
+    # Complete registration with 2FA
+    totp = pyotp.TOTP(totp_secret)
+    verify_response = await client.post(
+        "/api/auth/verify-2fa",
+        json={"totp_code": totp.now()},
+        headers={"Authorization": f"Bearer {temp_token}"}
+    )
+    assert verify_response.status_code == 200, f"2FA verification failed: {verify_response.text}"
+    tokens = verify_response.json()
+    
+    # Extract user_id from access token
+    payload = jwt.decode(tokens["access_token"], SECRET_KEY, algorithms=[ALGORITHM])
     
     return {
-        "user_id": user_data["user_id"],
+        "user_id": payload["user_id"],
         "access_token": tokens["access_token"],
         "refresh_token": tokens["refresh_token"]
     }
@@ -138,7 +168,7 @@ async def access_token(client: AsyncClient) -> str:
         client,
         email="test@example.com",
         password="Password1234!",
-        display_name="Test User"
+        display_name="John Smith"
     )
     
     response = await client.post("/api/auth/login", json={
@@ -156,7 +186,7 @@ async def second_user_token(client: AsyncClient) -> Dict[str, Any]:
         client,
         email="test2@example.com",
         password="Password1234!",
-        display_name="Test User 2"
+        display_name="Jane Smith"
     )
     
     response = await client.post("/api/auth/login", json={

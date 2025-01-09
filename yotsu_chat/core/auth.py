@@ -30,7 +30,16 @@ def get_password_hash(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash"""
-    return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+    print(f"[DEBUG] Password - Verifying password")
+    print(f"[DEBUG] Password - Plain password length: {len(plain_password)}")
+    print(f"[DEBUG] Password - Hashed password length: {len(hashed_password)}")
+    try:
+        result = bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+        print(f"[DEBUG] Password - Verification completed: {result}")
+        return result
+    except Exception as e:
+        print(f"[DEBUG] Password - Verification error: {str(e)}")
+        return False
 
 def create_access_token(data: dict, expires_delta: timedelta = None):
     """Create a new JWT token."""
@@ -96,15 +105,28 @@ def verify_totp(secret: str, token: str) -> bool:
     print(f"[DEBUG] Received token: {token}")
     print(f"[DEBUG] Current time: {current_time}")
     print(f"[DEBUG] Expected token: {totp.now()}")
-    return totp.verify(token)  # Standard verification without window
+    print(f"[DEBUG] Previous token: {totp.at(current_time - timedelta(seconds=30))}")
+    print(f"[DEBUG] Next token: {totp.at(current_time + timedelta(seconds=30))}")
+    result = totp.verify(token, valid_window=1)  # Allow 1 step before/after
+    print(f"[DEBUG] Verification result: {result}")
+    return result
 
-def create_temp_token(user_id: int):
-    """Create a temporary token for 2FA verification."""
+def create_temp_token(data: str | int):
+    """Create a temporary token for 2FA verification.
+    Args:
+        data: Either a user_id (int) or email (str)
+    """
     to_encode = {
-        "user_id": user_id,
         "temp": True,
         "exp": datetime.now(UTC) + timedelta(minutes=TEMP_TOKEN_EXPIRE_MINUTES)
     }
+    
+    # Add either user_id or email based on the type of data
+    if isinstance(data, int):
+        to_encode["user_id"] = data
+    else:
+        to_encode["email"] = data
+        
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -135,19 +157,25 @@ async def get_current_temp_user(credentials: HTTPAuthorizationCredentials = Depe
     try:
         token = credentials.credentials
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("user_id")
-        if user_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials"
-            )
+        
         # Check if this is a temporary token
         if not payload.get("temp", False):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Only temporary tokens are allowed for this operation"
             )
-        return {"user_id": user_id}
+        
+        # Handle both user_id and email in payload
+        user_id = payload.get("user_id")
+        email = payload.get("email")
+        
+        if not (user_id or email):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials"
+            )
+        
+        return {"user_id": user_id, "email": email}
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

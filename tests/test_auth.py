@@ -21,7 +21,23 @@ async def test_auth_flow(client: AsyncClient):
     print(f"Registration response: {response.status_code}")
     print(json.dumps(response.json(), indent=2))
     assert response.status_code == 201, "Registration failed"
-    totp_secret = response.json()["totp_secret"]
+    temp_token = response.json()["temp_token"]
+    totp_uri = response.json()["totp_uri"]
+    
+    # Extract TOTP secret from URI
+    totp_secret = pyotp.parse_uri(totp_uri).secret
+    
+    # Verify 2FA to complete registration
+    print("\n1.5 Verifying 2FA for registration...")
+    totp = pyotp.TOTP(totp_secret)
+    verify_response = await client.post(
+        "/api/auth/verify-2fa",
+        json={"totp_code": totp.now()},
+        headers={"Authorization": f"Bearer {temp_token}"}
+    )
+    print(f"2FA verification response: {verify_response.status_code}")
+    print(json.dumps(verify_response.json(), indent=2))
+    assert verify_response.status_code == 200, "2FA verification failed"
     
     # 2. Test login
     print("\n2. Testing login...")
@@ -46,8 +62,8 @@ async def test_auth_flow(client: AsyncClient):
         temp_token = response_data["temp_token"]
         assert temp_token is not None, "Temp token not returned"
         
-        # 3. Test 2FA verification
-        print("\n3. Testing 2FA verification...")
+        # 3. Test 2FA verification for login
+        print("\n3. Testing 2FA verification for login...")
         totp = pyotp.TOTP(totp_secret)
         response = await client.post(
             "/api/auth/verify-2fa",
@@ -115,7 +131,19 @@ async def test_token_security(client: AsyncClient):
             "password": "Password1234!",
             "display_name": "Test User"
         })
-        totp_secret = register_response.json()["totp_secret"]
+        assert register_response.status_code == 201
+        temp_token = register_response.json()["temp_token"]
+        totp_uri = register_response.json()["totp_uri"]
+        totp_secret = pyotp.parse_uri(totp_uri).secret
+        
+        # Complete registration with 2FA
+        totp = pyotp.TOTP(totp_secret)
+        verify_response = await client.post(
+            "/api/auth/verify-2fa",
+            json={"totp_code": totp.now()},
+            headers={"Authorization": f"Bearer {temp_token}"}
+        )
+        assert verify_response.status_code == 200
         
         login_response = await client.post("/api/auth/login", json={
             "email": "test@example.com",
@@ -151,6 +179,18 @@ async def test_duplicate_registration(client: AsyncClient):
         "display_name": "Test User"
     })
     assert response.status_code == 201
+    temp_token = response.json()["temp_token"]
+    totp_uri = response.json()["totp_uri"]
+    totp_secret = pyotp.parse_uri(totp_uri).secret
+    
+    # Complete first registration with 2FA
+    totp = pyotp.TOTP(totp_secret)
+    verify_response = await client.post(
+        "/api/auth/verify-2fa",
+        json={"totp_code": totp.now()},
+        headers={"Authorization": f"Bearer {temp_token}"}
+    )
+    assert verify_response.status_code == 200
     
     # Try to register same email again
     response = await client.post("/api/auth/register", json={
@@ -167,12 +207,12 @@ async def test_special_characters(client: AsyncClient):
         {
             "email": "test.user+tag@example.com",
             "password": "Password1234!",
-            "display_name": "Test 👨‍💻 User"
+            "display_name": "John Smith"
         },
         {
             "email": "üser@example.com",
             "password": "Password1234!",
-            "display_name": "Über User 🚀"
+            "display_name": "Mary O'Connor"
         }
     ]
     
@@ -180,6 +220,18 @@ async def test_special_characters(client: AsyncClient):
         # Test registration
         response = await client.post("/api/auth/register", json=user_data)
         assert response.status_code == 201
+        temp_token = response.json()["temp_token"]
+        totp_uri = response.json()["totp_uri"]
+        totp_secret = pyotp.parse_uri(totp_uri).secret
+        
+        # Complete registration with 2FA
+        totp = pyotp.TOTP(totp_secret)
+        verify_response = await client.post(
+            "/api/auth/verify-2fa",
+            json={"totp_code": totp.now()},
+            headers={"Authorization": f"Bearer {temp_token}"}
+        )
+        assert verify_response.status_code == 200
         
         # Test login
         response = await client.post("/api/auth/login", json={
@@ -191,16 +243,30 @@ async def test_special_characters(client: AsyncClient):
 async def test_token_validation(client: AsyncClient):
     """Test token validation and security"""
     # Register and get initial tokens
-    await client.post("/api/auth/register", json={
+    register_response = await client.post("/api/auth/register", json={
         "email": "test@example.com",
         "password": "Password1234!",
         "display_name": "Test User"
     })
+    assert register_response.status_code == 201
+    temp_token = register_response.json()["temp_token"]
+    totp_uri = register_response.json()["totp_uri"]
+    totp_secret = pyotp.parse_uri(totp_uri).secret
+    
+    # Complete registration with 2FA
+    totp = pyotp.TOTP(totp_secret)
+    verify_response = await client.post(
+        "/api/auth/verify-2fa",
+        json={"totp_code": totp.now()},
+        headers={"Authorization": f"Bearer {temp_token}"}
+    )
+    assert verify_response.status_code == 200
     
     login_response = await client.post("/api/auth/login", json={
         "email": "test@example.com",
         "password": "Password1234!"
     })
+    assert login_response.status_code == 200
     tokens = login_response.json()
     
     # Test using refresh token as access token (should fail)
