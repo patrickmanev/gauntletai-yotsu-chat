@@ -23,7 +23,7 @@ var/
 yotsu-chat-venv/
 
 # Node
-node_modules/
+.node_modules/
 .next/
 .npm
 .env.local
@@ -46,4 +46,3 @@ data/
 
 # Temp exclusions
 webapp-old/
-webapp/

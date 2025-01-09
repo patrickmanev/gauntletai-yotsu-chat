@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Set, Tuple, Union, cast
 import os
 
-from app.core.presence import PresenceState, presence_manager
-from app.core.ws_core import manager
-from app.main import app
+from yotsu_chat.core.presence import PresenceState, presence_manager
+from yotsu_chat.core.ws_core import manager
+from yotsu_chat.main import app
 from tests.conftest import create_test_user
 from tests.test_channels import register_test_user
 

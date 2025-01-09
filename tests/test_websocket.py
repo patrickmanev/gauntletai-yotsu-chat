@@ -1,9 +1,10 @@
 import pytest
+from fastapi.testclient import TestClient
+import json
+from yotsu_chat.core.ws_core import manager as ws_manager
 import asyncio
 from typing import Dict, Any, List
 from httpx import AsyncClient
-from app.core.ws_core import manager as ws_manager
-import json
 import uuid
 
 pytestmark = pytest.mark.asyncio

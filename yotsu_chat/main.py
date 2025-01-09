@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .core.database import init_db
-from .api.routes import auth, channels, messages, reactions, websocket
+from yotsu_chat.core.database import init_db
+from yotsu_chat.api.routes import auth, channels, messages, reactions, websocket
 import os
 
 app = FastAPI()

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.core.auth import get_current_user
-from app.schemas.channel import ChannelCreate, ChannelResponse, ChannelMember, ChannelMemberCreate, ChannelRole
-from app.core.database import get_db
+from yotsu_chat.core.auth import get_current_user
+from yotsu_chat.schemas.channel import ChannelCreate, ChannelResponse, ChannelMember, ChannelMemberCreate, ChannelRole
+from yotsu_chat.core.database import get_db
 from typing import List
 import aiosqlite
 from datetime import datetime

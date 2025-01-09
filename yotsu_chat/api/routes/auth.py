@@ -1,19 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.core.auth import (
+from yotsu_chat.core.auth import (
     get_current_user, get_current_temp_user,
     create_access_token, create_temp_token, create_refresh_token,
     get_password_hash, verify_password, verify_totp, verify_refresh_token,
     REFRESH_SECRET_KEY, ALGORITHM
 )
-from app.schemas.auth import (
+from yotsu_chat.schemas.auth import (
     UserRegister, UserLogin, UserResponse,
     TokenResponse, TOTPVerify, RefreshRequest
 )
-from app.core.database import get_db
+from yotsu_chat.core.database import get_db
 import pyotp
 import aiosqlite
 from jose import jwt, JWTError, ExpiredSignatureError
-from app.core.config import get_settings
+from yotsu_chat.core.config import get_settings
 import os
 from datetime import datetime, UTC
 from pydantic import BaseModel, EmailStr

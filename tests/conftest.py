@@ -11,8 +11,8 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 # Set test mode for the entire test session
 os.environ["TEST_MODE"] = "true"
 
-from app.main import app
-from app.core.database import init_db
+from yotsu_chat.main import app
+from yotsu_chat.core.database import init_db
 
 pytest_plugins = ["pytest_asyncio"]
 
@@ -99,7 +99,37 @@ async def create_test_user(client: Union[TestClient, AsyncClient], email: str, p
         })
     assert response.status_code == 201
     data = response.json()
-    return data["user_id"] 
+    return data["user_id"]
+
+async def register_test_user(
+    client: AsyncClient,
+    email: str,
+    password: str,
+    display_name: str
+) -> Dict[str, Any]:
+    """Register a test user and complete the authentication flow"""
+    # 1. Register user
+    response = await client.post("/api/auth/register", json={
+        "email": email,
+        "password": password,
+        "display_name": display_name
+    })
+    assert response.status_code == 201, f"Registration failed: {response.text}"
+    user_data = response.json()
+    
+    # 2. Login
+    response = await client.post("/api/auth/login", json={
+        "email": email,
+        "password": password
+    })
+    assert response.status_code == 200, f"Login failed: {response.text}"
+    tokens = response.json()
+    
+    return {
+        "user_id": user_data["user_id"],
+        "access_token": tokens["access_token"],
+        "refresh_token": tokens["refresh_token"]
+    }
 
 @pytest_asyncio.fixture
 async def access_token(client: AsyncClient) -> str:
@@ -180,7 +210,7 @@ async def thread_with_reply(client: AsyncClient, access_token: str, test_channel
     return {
         "parent": parent_data,
         "reply": reply_data
-    } 
+    }
 
 @pytest_asyncio.fixture
 async def test_message(client: AsyncClient, access_token: str, test_channel: Dict[str, Any]) -> Dict[str, Any]:

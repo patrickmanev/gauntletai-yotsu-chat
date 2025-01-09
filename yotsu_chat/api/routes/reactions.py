@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.core.auth import get_current_user
-from app.schemas.reaction import ReactionCreate, ReactionResponse, ReactionCount
-from app.core.database import get_db
-from app.core.ws_core import manager as ws_manager
+from yotsu_chat.core.auth import get_current_user
+from yotsu_chat.schemas.reaction import ReactionCreate, ReactionResponse, ReactionCount
+from yotsu_chat.core.database import get_db
+from yotsu_chat.core.ws_core import manager as ws_manager
 from typing import List
 import aiosqlite
 import json

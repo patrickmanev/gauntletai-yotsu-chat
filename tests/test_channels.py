@@ -1,55 +1,11 @@
-import asyncio
 import pytest
-import os
+from httpx import AsyncClient
 from typing import Dict, Any
-from app.main import app
-from httpx import ASGITransport, AsyncClient
+import os
+import asyncio
+from conftest import register_test_user
 
 pytestmark = pytest.mark.asyncio
-
-@pytest.fixture(autouse=True)
-async def setup_database():
-    """Initialize the database before each test"""
-    if os.path.exists("yotsu_chat.db"):
-        os.remove("yotsu_chat.db")
-    from app.core.database import init_db
-    await init_db()
-    yield
-    if os.path.exists("yotsu_chat.db"):
-        os.remove("yotsu_chat.db")
-
-async def register_test_user(
-    client: AsyncClient,
-    email: str,
-    password: str,
-    display_name: str
-) -> Dict[str, Any]:
-    """Register a test user and complete the authentication flow"""
-    # Set test mode
-    os.environ["TEST_MODE"] = "true"
-    
-    # 1. Register user
-    response = await client.post("/api/auth/register", json={
-        "email": email,
-        "password": password,
-        "display_name": display_name
-    })
-    assert response.status_code == 201, f"Registration failed: {response.text}"
-    user_data = response.json()
-    
-    # 2. Login
-    response = await client.post("/api/auth/login", json={
-        "email": email,
-        "password": password
-    })
-    assert response.status_code == 200, f"Login failed: {response.text}"
-    tokens = response.json()
-    
-    return {
-        "user_id": user_data["user_id"],
-        "access_token": tokens["access_token"],
-        "refresh_token": tokens["refresh_token"]
-    }
 
 async def test_channel_operations(client: AsyncClient):
     """Test channel operations"""

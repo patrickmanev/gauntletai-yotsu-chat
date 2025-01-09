@@ -1,6 +1,6 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from app.core.ws_core import manager
-from app.core.presence import presence_manager
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends, HTTPException
+from yotsu_chat.core.ws_core import manager
+from yotsu_chat.core.presence import presence_manager
 import logging
 import json
 import uuid

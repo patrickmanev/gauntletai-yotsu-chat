@@ -1,22 +1,13 @@
-import asyncio
-import json
-import pyotp
 import pytest
-import os
 from httpx import AsyncClient
+import os
+import json
+import asyncio
+from datetime import datetime, timedelta
+import pyotp
+from jose import jwt
 
 pytestmark = pytest.mark.asyncio
-
-@pytest.fixture(autouse=True)
-async def cleanup_database():
-    """Clean up the database before each test"""
-    if os.path.exists("yotsu_chat.db"):
-        os.remove("yotsu_chat.db")
-    from app.core.database import init_db
-    await init_db()
-    yield
-    if os.path.exists("yotsu_chat.db"):
-        os.remove("yotsu_chat.db")
 
 async def test_auth_flow(client: AsyncClient):
     """Test the complete authentication flow"""
