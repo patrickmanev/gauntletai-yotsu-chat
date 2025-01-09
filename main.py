@@ -5,11 +5,14 @@ import asyncio
 
 app = FastAPI()
 
-# Include routers
-app.include_router(auth.router)
-app.include_router(channels.router)
-app.include_router(messages.router)
-app.include_router(reactions.router)
+# Include routers with /api prefix
+api_app = FastAPI(prefix="/api")
+api_app.include_router(auth.router)
+api_app.include_router(channels.router)
+api_app.include_router(messages.router)
+api_app.include_router(reactions.router)
+
+app.mount("/api", api_app)
 
 @app.get("/")
 async def root():

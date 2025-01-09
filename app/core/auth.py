@@ -90,7 +90,13 @@ def get_totp_uri(secret: str, email: str) -> str:
 def verify_totp(secret: str, token: str) -> bool:
     """Verify a TOTP token"""
     totp = pyotp.TOTP(secret)
-    return totp.verify(token)
+    current_time = datetime.now()
+    print(f"[DEBUG] TOTP Verification:")
+    print(f"[DEBUG] Secret: {secret}")
+    print(f"[DEBUG] Received token: {token}")
+    print(f"[DEBUG] Current time: {current_time}")
+    print(f"[DEBUG] Expected token: {totp.now()}")
+    return totp.verify(token)  # Standard verification without window
 
 def create_temp_token(user_id: int):
     """Create a temporary token for 2FA verification."""

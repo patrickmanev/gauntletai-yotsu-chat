@@ -121,6 +121,7 @@ async def verify_2fa(
 ):
     try:
         user_id = current_user["user_id"]
+        print(f"[DEBUG] Verifying 2FA for user_id: {user_id}")
         
         # Get user's TOTP secret
         async with db.execute(
@@ -129,7 +130,9 @@ async def verify_2fa(
         ) as cursor:
             user_data = await cursor.fetchone()
             if not user_data:
+                print(f"[DEBUG] User not found in database: {user_id}")
                 raise HTTPException(status_code=401, detail="User not found")
+            print(f"[DEBUG] Retrieved user data: {dict(user_data)}")
         
         # In test mode, accept any code
         if os.getenv("TEST_MODE") == "true":
@@ -139,8 +142,10 @@ async def verify_2fa(
         
         # Verify TOTP code
         if not verify_totp(user_data["totp_secret"], totp_data.totp_code):
+            print(f"[DEBUG] TOTP verification failed")
             raise HTTPException(status_code=401, detail="Invalid TOTP code")
         
+        print(f"[DEBUG] TOTP verification successful")
         # Create tokens
         access_token = create_access_token({"user_id": user_id})
         refresh_token = create_refresh_token({"user_id": user_id})
@@ -149,6 +154,7 @@ async def verify_2fa(
     except HTTPException:
         raise  # Re-raise HTTP exceptions
     except Exception as e:
+        print(f"[DEBUG] Unexpected error in verify_2fa: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -183,4 +189,9 @@ async def refresh_token(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Internal server error") 
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get("/verify")
+async def verify_token(current_user: dict = Depends(get_current_user)):
+    """Verify if the current token is valid"""
+    return {"valid": True, "user_id": current_user["user_id"]} 

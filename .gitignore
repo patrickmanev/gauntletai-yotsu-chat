@@ -34,7 +34,16 @@ node_modules/
 .idea/
 *.swp
 *.swo
+.cursorrules
 
 # OS
 .DS_Store
 Thumbs.db 
+
+# Data
+data/
+*.db 
+
+# Temp exclusions
+webapp-old/
+webapp/

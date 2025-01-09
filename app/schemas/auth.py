@@ -6,6 +6,14 @@ class UserRegister(BaseModel):
     password: str
     display_name: str
 
+    @validator('display_name')
+    def validate_display_name(cls, v):
+        if len(v) > 25:
+            raise ValueError("Display name must not exceed 25 characters")
+        if not re.match(r"^[a-zA-Z']+(?:\s[a-zA-Z']+)*$", v):
+            raise ValueError("Display name must contain only English letters, apostrophes, and single spaces between names")
+        return v
+
     @validator('password')
     def validate_password(cls, v):
         requirements = [

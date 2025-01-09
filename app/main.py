@@ -25,8 +25,8 @@ app.include_router(websocket.router)  # WebSocket router doesn't need prefix
 @app.on_event("startup")
 async def startup_event():
     """Initialize database on startup"""
-    if os.environ.get("TEST_MODE"):
-        await init_db()
+    # Always create tables, but only drop them in test mode
+    await init_db()
 
 @app.get("/health")
 async def health_check():

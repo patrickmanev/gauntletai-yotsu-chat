@@ -1,8 +1,39 @@
 import aiosqlite
 import os
 from typing import AsyncGenerator
+from pathlib import Path
 
-DATABASE_URL = "yotsu_chat.db"
+# Environment modes
+TEST_MODE = os.getenv("TEST_MODE", "0") == "1"
+DEV_MODE = os.getenv("DEV_MODE", "1") == "1"  # Default to DEV_MODE if no mode is set
+PROD_MODE = os.getenv("PROD_MODE", "0") == "1"
+
+# Ensure only one mode is active
+if sum([TEST_MODE, DEV_MODE, PROD_MODE]) != 1:
+    # Default to DEV_MODE if no mode or multiple modes are set
+    TEST_MODE = False
+    DEV_MODE = True
+    PROD_MODE = False
+
+# Database paths
+DB_ROOT = Path("data/db")
+TEST_DB_PATH = DB_ROOT / "test" / "test_yotsu_chat.db"
+DEV_DB_PATH = DB_ROOT / "dev" / "dev_yotsu_chat.db"
+PROD_DB_PATH = DB_ROOT / "prod" / "prod_yotsu_chat.db"
+
+# Set the database path based on mode
+if TEST_MODE:
+    DATABASE_URL = str(TEST_DB_PATH)
+elif DEV_MODE:
+    DATABASE_URL = str(DEV_DB_PATH)
+else:  # PROD_MODE
+    DATABASE_URL = str(PROD_DB_PATH)
+
+# Ensure database directory exists
+DB_ROOT.mkdir(parents=True, exist_ok=True)
+TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+DEV_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+PROD_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
     db = await aiosqlite.connect(DATABASE_URL)
@@ -15,20 +46,32 @@ async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
     finally:
         await db.close()
 
-async def init_db():
-    """Initialize the database with all required tables"""
+async def init_db(force: bool = False):
+    """Initialize the database with all required tables.
+    Args:
+        force: If True, drop and recreate all tables even if not in test mode.
+    """
+    # Determine if we should drop tables
+    # Drop tables if:
+    # 1. We're in TEST_MODE (always drop for tests)
+    # 2. force is True (manual override)
+    # Never drop tables in PROD_MODE regardless of force parameter
+    should_drop = (TEST_MODE or force) and not PROD_MODE
+    
     async with aiosqlite.connect(DATABASE_URL) as db:
         try:
             # Enable foreign keys
             await db.execute("PRAGMA foreign_keys = ON")
             
-            # Drop existing tables in reverse order of dependencies
-            await db.execute("DROP TABLE IF EXISTS reactions")
-            await db.execute("DROP TABLE IF EXISTS attachments")
-            await db.execute("DROP TABLE IF EXISTS messages")
-            await db.execute("DROP TABLE IF EXISTS channels_members")
-            await db.execute("DROP TABLE IF EXISTS channels")
-            await db.execute("DROP TABLE IF EXISTS users")
+            if should_drop:
+                print(f"Dropping all tables in {DATABASE_URL}")
+                # Drop existing tables in reverse order of dependencies
+                await db.execute("DROP TABLE IF EXISTS reactions")
+                await db.execute("DROP TABLE IF EXISTS attachments")
+                await db.execute("DROP TABLE IF EXISTS messages")
+                await db.execute("DROP TABLE IF EXISTS channels_members")
+                await db.execute("DROP TABLE IF EXISTS channels")
+                await db.execute("DROP TABLE IF EXISTS users")
             
             # Create users table
             await db.execute("""
