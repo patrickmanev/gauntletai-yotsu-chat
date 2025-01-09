@@ -16,8 +16,26 @@ from jose import jwt, JWTError, ExpiredSignatureError
 from app.core.config import get_settings
 import os
 from datetime import datetime, UTC
+from pydantic import BaseModel, EmailStr
+
+class EmailCheck(BaseModel):
+    email: EmailStr
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+@router.post("/check-email")
+async def check_email(email_data: EmailCheck, db: aiosqlite.Connection = Depends(get_db)):
+    """Check if an email is available for registration"""
+    async with db.execute(
+        "SELECT 1 FROM users WHERE email = ?",
+        (email_data.email,)
+    ) as cursor:
+        if await cursor.fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail="Email already registered"
+            )
+    return {"message": "Email is available"}
 
 @router.post("/register", response_model=UserResponse, status_code=201)
 async def register(user: UserRegister, db: aiosqlite.Connection = Depends(get_db)):

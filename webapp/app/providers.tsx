@@ -2,7 +2,11 @@
 
 import * as React from "react"
 
-export function Providers({ children }: { children: React.ReactNode }) {
+type ProvidersProps = {
+  children: React.ReactNode
+}
+
+export function Providers({ children }: ProvidersProps) {
   const [mounted, setMounted] = React.useState(false)
 
   React.useEffect(() => {
@@ -10,9 +14,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
   }, [])
 
   if (!mounted) {
-    return null
+    return <>{null}</>
   }
 
-  return children
+  return <>{children}</>
 }
 
