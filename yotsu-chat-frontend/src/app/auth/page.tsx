@@ -95,7 +95,7 @@ export default function AuthPage() {
         if (!checkResponse.ok) {
           const data = await checkResponse.json();
           if (checkResponse.status === 409) {
-            setValidationMessage('This email is already registered. Please use a different email or sign in.');
+            setValidationMessage('This email is already registered.');
             return;
           }
           throw new Error(data.detail || 'Failed to check email');
@@ -222,7 +222,33 @@ export default function AuthPage() {
               <div className="text-sm font-medium text-gray-700">Enter 6-digit code</div>
               <InputOTP
                 value={totpCode}
-                onChange={setTotpCode}
+                onChange={(value) => {
+                  setTotpCode(value);
+                  if (value.length === 6) {
+                    fetch('/api/auth/verify-2fa', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${tempToken}`
+                      },
+                      body: JSON.stringify({ totp_code: value }),
+                    })
+                    .then(response => {
+                      if (response.ok) {
+                        return response.json();
+                      }
+                      throw new Error('Invalid TOTP code');
+                    })
+                    .then(data => {
+                      setTokens(data.access_token, data.refresh_token);
+                      router.push('/client');
+                    })
+                    .catch(() => {
+                      setValidationMessage('TOTP code is invalid. Please try again.');
+                      setTotpCode('');
+                    });
+                  }
+                }}
                 maxLength={6}
               >
                 <InputOTPGroup>

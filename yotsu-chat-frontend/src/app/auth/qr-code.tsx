@@ -11,7 +11,6 @@ export default function QRCodeWrapper({ value }: { value: string }) {
         bgColor="#FFFFFF"
         fgColor="#000000"
         level="H"
-        includeMargin={true}
       />
     </div>
   );
