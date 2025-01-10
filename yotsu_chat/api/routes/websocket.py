@@ -1,6 +1,7 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends, HTTPException
 from yotsu_chat.core.ws_core import manager
 from yotsu_chat.core.presence import presence_manager
+from yotsu_chat.core.database import debug_log
 import logging
 import json
 import uuid
@@ -32,7 +33,7 @@ async def websocket_endpoint(websocket: WebSocket):
             while True:
                 # Wait for messages
                 message_text = await websocket.receive_text()
-                logger.debug(f"Received message from connection {connection_id}: {message_text}")
+                debug_log("WS", f"Received message from connection {connection_id}: {message_text}")
                 
                 try:
                     message = json.loads(message_text)

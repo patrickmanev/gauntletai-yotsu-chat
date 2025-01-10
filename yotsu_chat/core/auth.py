@@ -9,6 +9,7 @@ import secrets
 from fastapi import WebSocket
 from fastapi import WebSocketDisconnect
 import os
+from yotsu_chat.core.database import debug_log
 
 # Security configuration
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
@@ -30,15 +31,15 @@ def get_password_hash(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash"""
-    print(f"[DEBUG] Password - Verifying password")
-    print(f"[DEBUG] Password - Plain password length: {len(plain_password)}")
-    print(f"[DEBUG] Password - Hashed password length: {len(hashed_password)}")
     try:
+        debug_log("AUTH", "Verifying password")
+        debug_log("AUTH", f"├─ Plain password length: {len(plain_password)}")
+        debug_log("AUTH", f"└─ Hashed password length: {len(hashed_password)}")
         result = bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
-        print(f"[DEBUG] Password - Verification completed: {result}")
+        debug_log("AUTH", f"Password verification: {'success' if result else 'failed'}")
         return result
     except Exception as e:
-        print(f"[DEBUG] Password - Verification error: {str(e)}")
+        debug_log("ERROR", f"Password verification error: {str(e)}")
         return False
 
 def create_access_token(data: dict, expires_delta: timedelta = None):
@@ -100,15 +101,15 @@ def verify_totp(secret: str, token: str) -> bool:
     """Verify a TOTP token"""
     totp = pyotp.TOTP(secret)
     current_time = datetime.now()
-    print(f"[DEBUG] TOTP Verification:")
-    print(f"[DEBUG] Secret: {secret}")
-    print(f"[DEBUG] Received token: {token}")
-    print(f"[DEBUG] Current time: {current_time}")
-    print(f"[DEBUG] Expected token: {totp.now()}")
-    print(f"[DEBUG] Previous token: {totp.at(current_time - timedelta(seconds=30))}")
-    print(f"[DEBUG] Next token: {totp.at(current_time + timedelta(seconds=30))}")
-    result = totp.verify(token, valid_window=1)  # Allow 1 step before/after
-    print(f"[DEBUG] Verification result: {result}")
+    debug_log("AUTH", "TOTP Verification:")
+    debug_log("AUTH", f"├─ Secret: {secret}")
+    debug_log("AUTH", f"├─ Received token: {token}")
+    debug_log("AUTH", f"├─ Current time: {current_time}")
+    debug_log("AUTH", f"├─ Expected token: {totp.now()}")
+    debug_log("AUTH", f"├─ Previous token: {totp.at(current_time - timedelta(seconds=30))}")
+    debug_log("AUTH", f"└─ Next token: {totp.at(current_time + timedelta(seconds=30))}")
+    result = totp.verify(token)
+    debug_log("AUTH", f"Verification result: {'success' if result else 'failed'}")
     return result
 
 def create_temp_token(data: str | int):

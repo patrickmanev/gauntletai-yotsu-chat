@@ -8,6 +8,7 @@ from .auth import decode_token
 from ..utils.errors import YotsuError, ErrorCode
 import logging
 import os
+from yotsu_chat.core.database import debug_log
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ class ConnectionManager:
         self.active_connections[connection_id] = websocket
         self.connection_health[connection_id] = datetime.now()
         self.connection_users[connection_id] = user_id
-        logger.debug(f"Active connections after connect: {len(self.active_connections)}")
+        debug_log("WS", f"Active connections after connect: {len(self.active_connections)}")
         
         # Start health check task if not running
         if not self._health_check_task or self._health_check_task.done():
@@ -108,7 +109,7 @@ class ConnectionManager:
         async with self._lock:
             logger.info(f"Connection {connection_id} joining channel {channel_id}")
             if channel_id not in self.channel_connections:
-                logger.debug(f"Creating new channel set for channel {channel_id}")
+                debug_log("WS", f"Creating new channel set for channel {channel_id}")
                 self.channel_connections[channel_id] = set()
             self.channel_connections[channel_id].add(connection_id)
             logger.info(f"Added connection {connection_id} to channel {channel_id}, total connections: {len(self.channel_connections[channel_id])}")
@@ -153,7 +154,7 @@ class ConnectionManager:
                         
                     await websocket.send_text(message_text)
                     success_count += 1
-                    logger.debug(f"Successfully sent message to connection {conn_id}")
+                    debug_log("WS", f"Successfully sent message to connection {conn_id}")
                 except Exception as e:
                     logger.error(f"Error broadcasting to connection {conn_id}: {str(e)}")
                     dead_connections.add(conn_id)
@@ -175,10 +176,10 @@ class ConnectionManager:
             
             for connection_id, websocket in self.active_connections.items():
                 try:
-                    logger.debug(f"Sending to connection {connection_id}")
+                    debug_log("WS", f"Sending to connection {connection_id}")
                     await websocket.send_text(message_text)
                     success_count += 1
-                    logger.debug(f"Successfully sent to connection {connection_id}")
+                    debug_log("WS", f"Successfully sent to connection {connection_id}")
                 except Exception as e:
                     logger.error(f"Error sending to connection {connection_id}: {str(e)}")
                     dead_connections.add(connection_id)
@@ -196,7 +197,7 @@ class ConnectionManager:
     async def handle_pong(self, connection_id: str):
         """Update last pong time for a connection"""
         self.connection_health[connection_id] = datetime.now()
-        logger.debug(f"Received pong from connection {connection_id}")
+        debug_log("WS", f"Received pong from connection {connection_id}")
     
     async def send_error(self, connection_id: str, code: int, message: str):
         """Send error message to WebSocket"""
@@ -273,7 +274,7 @@ class ConnectionManager:
         if websocket:
             try:
                 await websocket.send_json(message)
-                logger.debug(f"Successfully sent message to connection {connection_id}")
+                debug_log("WS", f"Successfully sent message to connection {connection_id}")
             except Exception as e:
                 logger.error(f"Error sending to connection {connection_id}: {e}")
                 # Connection may be dead, remove it
