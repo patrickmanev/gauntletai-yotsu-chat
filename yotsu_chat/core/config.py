@@ -25,7 +25,7 @@ class EnvironmentMode(str, Enum):
 
 class DatabaseSettings(BaseSettings):
     """Database-specific settings."""
-    root_dir: Path = Path("data/db")
+    root_dir: Path = Path("../data/db")
     test_db_name: str = "test_yotsu_chat.db"
     dev_db_name: str = "dev_yotsu_chat.db"
     prod_db_name: str = "prod_yotsu_chat.db"
@@ -33,7 +33,7 @@ class DatabaseSettings(BaseSettings):
     def get_db_path(self, mode: EnvironmentMode) -> Path:
         """Get the database path for the specified environment mode."""
         db_name = getattr(self, f"{mode.value}_db_name")
-        return self.root_dir / mode.value / db_name
+        return (Path(__file__).parent.parent.parent / self.root_dir / mode.value / db_name).resolve()
 
     model_config = {
         "env_prefix": "YOTSU_DB_",
