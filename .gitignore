@@ -42,7 +42,10 @@ Thumbs.db
 
 # Data
 data/
-*.db 
+*.db
+
+# Tests
+.pytest_cache/
 
 # Temp exclusions
 webapp-old/

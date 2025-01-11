@@ -1,185 +1,106 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from yotsu_chat.core.auth import get_current_user
-from yotsu_chat.schemas.channel import ChannelCreate, ChannelResponse, ChannelMember, ChannelMemberCreate, ChannelRole
+from yotsu_chat.schemas.channel import (
+    ChannelCreate, ChannelResponse, ChannelType, ChannelUpdate
+)
 from yotsu_chat.core.database import get_db
-from typing import List
+from yotsu_chat.services.channel_service import channel_service
+from yotsu_chat.utils import debug_log
+from typing import List, Optional
 import aiosqlite
-from datetime import datetime
+
 
 router = APIRouter(prefix="/channels", tags=["channels"])
 
+# Channel CRUD operations
 @router.post("", response_model=ChannelResponse, status_code=201)
 async def create_channel(
     channel: ChannelCreate,
     current_user: dict = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db)
 ):
+    """Create a new channel."""
     try:
-        # Check for duplicate channel name
-        async with db.execute(
-            "SELECT 1 FROM channels WHERE name = ?",
-            (channel.name,)
-        ) as cursor:
-            if await cursor.fetchone():
-                raise HTTPException(status_code=400, detail="Channel name already exists")
-        
-        # Create channel
-        async with db.execute(
-            """
-            INSERT INTO channels (name, type, created_by)
-            VALUES (?, ?, ?)
-            RETURNING channel_id, name, type, created_at
-            """,
-            (channel.name, channel.type, current_user["user_id"])
-        ) as cursor:
-            channel_data = await cursor.fetchone()
-        
-        # Add creator as owner
-        await db.execute(
-            """
-            INSERT INTO channels_members (channel_id, user_id, role)
-            VALUES (?, ?, ?)
-            """,
-            (channel_data["channel_id"], current_user["user_id"], ChannelRole.OWNER)
+        channel_id = await channel_service.create_channel(
+            db=db,
+            name=channel.name,
+            type=channel.type,
+            created_by=current_user["user_id"],
+            initial_members=channel.initial_members
         )
         
-        # Add initial members if provided
-        if hasattr(channel, 'initial_members') and channel.initial_members:
-            for member_id in channel.initial_members:
-                # Skip if member is the creator
-                if member_id == current_user["user_id"]:
-                    continue
-                
-                # Verify member exists
-                async with db.execute(
-                    "SELECT 1 FROM users WHERE user_id = ?",
-                    (member_id,)
-                ) as cursor:
-                    if not await cursor.fetchone():
-                        continue  # Skip non-existent users
-                
-                # Add member with default role
-                await db.execute(
-                    """
-                    INSERT INTO channels_members (channel_id, user_id, role)
-                    VALUES (?, ?, ?)
-                    """,
-                    (channel_data["channel_id"], member_id, ChannelRole.MEMBER)
-                )
-        
-        await db.commit()
-        
-        return ChannelResponse(
-            channel_id=channel_data["channel_id"],
-            name=channel_data["name"],
-            type=channel_data["type"],
-            created_at=channel_data["created_at"],
-            is_member=True,  # Creator is always a member
-            role=ChannelRole.OWNER  # Creator is always the owner
+        # Get created channel details
+        channels = await channel_service.list_channels(
+            db=db,
+            user_id=current_user["user_id"],
+            include_types=[channel.type]
         )
-    except aiosqlite.IntegrityError as e:
-        await db.rollback()
-        raise HTTPException(status_code=400, detail="Channel creation failed due to constraint violation")
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@router.post("/{channel_id}/members", response_model=ChannelMember)
-async def add_channel_member(
-    channel_id: int,
-    member: ChannelMemberCreate,
-    current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
-):
-    # Check if channel exists
-    async with db.execute(
-        "SELECT 1 FROM channels WHERE channel_id = ?",
-        (channel_id,)
-    ) as cursor:
-        if not await cursor.fetchone():
-            raise HTTPException(status_code=404, detail="Channel not found")
-    
-    # Check if current user is owner or admin
-    async with db.execute(
-        """
-        SELECT role FROM channels_members
-        WHERE channel_id = ? AND user_id = ? AND role IN ('owner', 'admin')
-        """,
-        (channel_id, current_user["user_id"])
-    ) as cursor:
-        if not await cursor.fetchone():
-            raise HTTPException(
-                status_code=403,
-                detail="Only channel owners and admins can add members"
-            )
-    
-    # Check if user exists and get display name
-    async with db.execute(
-        "SELECT display_name FROM users WHERE user_id = ?",
-        (member.user_id,)
-    ) as cursor:
-        user_data = await cursor.fetchone()
-        if not user_data:
-            raise HTTPException(status_code=404, detail="User not found")
-    
-    # Check if user is already a member
-    async with db.execute(
-        "SELECT 1 FROM channels_members WHERE channel_id = ? AND user_id = ?",
-        (channel_id, member.user_id)
-    ) as cursor:
-        if await cursor.fetchone():
-            raise HTTPException(
-                status_code=400,
-                detail="User is already a member of this channel"
-            )
-    
-    # Get current timestamp
-    now = datetime.utcnow()
-    
-    # Add member
-    await db.execute(
-        """
-        INSERT INTO channels_members (channel_id, user_id, role, joined_at)
-        VALUES (?, ?, ?, ?)
-        """,
-        (channel_id, member.user_id, member.role, now)
-    )
-    await db.commit()
-    
-    return ChannelMember(
-        user_id=member.user_id,
-        display_name=user_data["display_name"],
-        role=member.role,
-        joined_at=now
-    )
+        
+        for ch in channels:
+            if ch["channel_id"] == channel_id:
+                return ChannelResponse(**ch)
+        
+        raise HTTPException(status_code=500, detail="Channel creation failed")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("", response_model=List[ChannelResponse])
 async def list_channels(
+    types: Optional[List[str]] = Query(None, description="Channel types to include"),
+    limit: Optional[int] = None,
     current_user: dict = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db)
 ):
-    async with db.execute(
-        """
-        SELECT c.channel_id, c.name, c.type, c.created_at, cm.role
-        FROM channels c
-        JOIN channels_members cm ON c.channel_id = cm.channel_id
-        WHERE cm.user_id = ?
-        """,
-        (current_user["user_id"],)
-    ) as cursor:
-        channels = await cursor.fetchall()
-    
-    return [
-        ChannelResponse(
-            channel_id=channel["channel_id"],
-            name=channel["name"],
-            type=channel["type"],
-            created_at=str(channel["created_at"]),
-            is_member=True,  # We're only listing channels the user is a member of
-            role=channel["role"]
+    """List channels the user is a member of."""
+    try:
+        # Convert string types to ChannelType enums
+        enum_types = [ChannelType(t) for t in types] if types else None
+        
+        channels = await channel_service.list_channels(
+            db=db,
+            user_id=current_user["user_id"],
+            include_types=enum_types,
+            limit=limit
         )
-        for channel in channels
-    ]
+        return [ChannelResponse(**ch) for ch in channels]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/public", response_model=List[ChannelResponse])
+async def list_public_channels(
+    search: Optional[str] = None,
+    offset: Optional[int] = Query(default=0, ge=0),
+    limit: Optional[int] = Query(default=50, ge=1, le=100),
+    response: Response = None,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+) -> List[ChannelResponse]:
+    """List all public channels with optional search and pagination."""
+    debug_log("API", f"Listing public channels, search={search}, offset={offset}, limit={limit}")
+    debug_log("API", f"├─ Current user: {current_user['user_id']}")
+    
+    try:
+        channels, total_count = await channel_service.list_public_channels(
+            db,
+            current_user["user_id"],
+            search=search,
+            offset=offset,
+            limit=limit
+        )
+        
+        debug_log("API", f"├─ Found {len(channels)} channels")
+        debug_log("API", f"├─ Total count: {total_count}")
+        
+        if response:
+            response.headers["X-Total-Count"] = str(total_count)
+        
+        channel_responses = [ChannelResponse(**ch) for ch in channels]
+        debug_log("API", f"└─ Converted to response models")
+        return channel_responses
+        
+    except Exception as e:
+        debug_log("ERROR", f"Failed to list public channels: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/{channel_id}", response_model=ChannelResponse)
 async def get_channel(
@@ -187,161 +108,93 @@ async def get_channel(
     current_user: dict = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db)
 ):
-    # Get channel details with member info
-    async with db.execute(
-        """
-        SELECT c.channel_id, c.name, c.type, c.created_at, cm.role
-        FROM channels c
-        JOIN channels_members cm ON c.channel_id = cm.channel_id
-        WHERE c.channel_id = ? AND cm.user_id = ?
-        """,
-        (channel_id, current_user["user_id"])
-    ) as cursor:
-        channel = await cursor.fetchone()
-        if not channel:
-            raise HTTPException(
-                status_code=403,
-                detail="You are not a member of this channel"
-            )
-    
-    return ChannelResponse(
-        channel_id=channel["channel_id"],
-        name=channel["name"],
-        type=channel["type"],
-        created_at=str(channel["created_at"]),
-        is_member=True,  # We're only showing channels the user is a member of
-        role=channel["role"]
-    )
-
-@router.get("/{channel_id}/members", response_model=List[ChannelMember])
-async def list_channel_members(
-    channel_id: int,
-    current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
-):
-    # Check if user is a member
-    async with db.execute(
-        "SELECT 1 FROM channels_members WHERE channel_id = ? AND user_id = ?",
-        (channel_id, current_user["user_id"])
-    ) as cursor:
-        if not await cursor.fetchone():
-            raise HTTPException(
-                status_code=403,
-                detail="You are not a member of this channel"
-            )
-    
-    # Get members with display names
-    async with db.execute(
-        """
-        SELECT cm.user_id, cm.role, cm.joined_at, u.display_name
-        FROM channels_members cm
-        JOIN users u ON cm.user_id = u.user_id
-        WHERE cm.channel_id = ?
-        """,
-        (channel_id,)
-    ) as cursor:
-        members = await cursor.fetchall()
-    
-    return [
-        ChannelMember(
-            user_id=member["user_id"],
-            display_name=member["display_name"],
-            role=member["role"],
-            joined_at=member["joined_at"]
+    """Get channel details."""
+    try:
+        # First check if channel exists and get its type
+        async with db.execute(
+            "SELECT type FROM channels WHERE channel_id = ?",
+            [channel_id]
+        ) as cursor:
+            channel = await cursor.fetchone()
+            if not channel:
+                raise HTTPException(status_code=404, detail="Channel not found")
+            
+            channel_type = channel[0]
+            
+            # For private channels, verify membership
+            if channel_type == ChannelType.PRIVATE:
+                async with db.execute(
+                    """SELECT 1 FROM channels_members 
+                    WHERE channel_id = ? AND user_id = ?""",
+                    [channel_id, current_user["user_id"]]
+                ) as cursor:
+                    if not await cursor.fetchone():
+                        raise HTTPException(status_code=404, detail="Channel not found")
+        
+        # Get full channel details
+        channels = await channel_service.list_channels(
+            db=db,
+            user_id=current_user["user_id"]
         )
-        for member in members
-    ]
+        
+        for channel in channels:
+            if channel["channel_id"] == channel_id:
+                return ChannelResponse(**channel)
+        
+        raise HTTPException(status_code=404, detail="Channel not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) 
 
-@router.put("/{channel_id}", response_model=ChannelResponse)
+@router.patch("/{channel_id}", response_model=ChannelResponse)
 async def update_channel(
     channel_id: int,
-    channel: ChannelCreate,
+    channel_update_data: dict,  # Change to dict to prevent premature validation
     current_user: dict = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db)
 ):
-    # Check if user is owner or admin
-    async with db.execute(
-        """
-        SELECT role FROM channels_members
-        WHERE channel_id = ? AND user_id = ? AND role IN ('owner', 'admin')
-        """,
-        (channel_id, current_user["user_id"])
-    ) as cursor:
-        member = await cursor.fetchone()
-        if not member:
-            raise HTTPException(
-                status_code=403,
-                detail="Only channel owners and admins can update channel details"
-            )
+    """Update channel name."""
+    debug_log("API", f"Updating channel {channel_id}")
+    debug_log("API", f"├─ New name: {channel_update_data.get('name')}")
     
-    # Update channel
-    await db.execute(
-        """
-        UPDATE channels
-        SET name = ?, type = ?
-        WHERE channel_id = ?
-        """,
-        (channel.name, channel.type, channel_id)
-    )
-    await db.commit()
-    
-    # Get updated channel details
-    async with db.execute(
-        """
-        SELECT c.channel_id, c.name, c.type, c.created_at, cm.role
-        FROM channels c
-        JOIN channels_members cm ON c.channel_id = cm.channel_id
-        WHERE c.channel_id = ? AND cm.user_id = ?
-        """,
-        (channel_id, current_user["user_id"])
-    ) as cursor:
-        channel_data = await cursor.fetchone()
-        if not channel_data:
-            raise HTTPException(status_code=404, detail="Channel not found")
-    
-    return ChannelResponse(
-        channel_id=channel_data["channel_id"],
-        name=channel_data["name"],
-        type=channel_data["type"],
-        created_at=str(channel_data["created_at"]),
-        is_member=True,  # We're only showing channels the user is a member of
-        role=channel_data["role"]
-    )
-
-@router.delete("/{channel_id}/members/{user_id}")
-async def remove_channel_member(
-    channel_id: int,
-    user_id: int,
-    current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
-):
-    # Check if channel exists and user has permission
-    async with db.execute(
-        """
-        SELECT role FROM channels_members
-        WHERE channel_id = ? AND user_id = ? AND role IN ('owner', 'admin')
-        """,
-        (channel_id, current_user["user_id"])
-    ) as cursor:
-        if not await cursor.fetchone():
-            raise HTTPException(
-                status_code=403,
-                detail="Only channel owners and admins can remove members"
-            )
-    
-    # Check if target user is a member
-    async with db.execute(
-        "SELECT 1 FROM channels_members WHERE channel_id = ? AND user_id = ?",
-        (channel_id, user_id)
-    ) as cursor:
-        if not await cursor.fetchone():
-            raise HTTPException(status_code=404, detail="Member not found")
-    
-    # Remove member
-    await db.execute(
-        "DELETE FROM channels_members WHERE channel_id = ? AND user_id = ?",
-        (channel_id, user_id)
-    )
-    await db.commit()
-    
-    return {"status": "success"} 
+    try:
+        # Get channel type first for validation
+        async with db.execute(
+            "SELECT type FROM channels WHERE channel_id = ?",
+            [channel_id]
+        ) as cursor:
+            result = await cursor.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail="Channel not found")
+            
+            # Set channel type before validation
+            channel_update_data["channel_type"] = result[0]
+            
+            # Now validate the model
+            channel = ChannelUpdate(**channel_update_data)
+        
+        updated = await channel_service.update_channel(
+            db=db,
+            channel_id=channel_id,
+            name=channel.name,
+            current_user_id=current_user["user_id"]
+        )
+        
+        debug_log("API", "└─ Channel updated successfully")
+        return ChannelResponse(**updated)
+        
+    except ValueError as e:
+        debug_log("API", f"Validation error: {str(e)}")
+        raise HTTPException(status_code=422, detail=[{"msg": str(e)}])
+    except HTTPException as e:
+        debug_log("API", f"HTTP error: {e.status_code} - {e.detail}")
+        if e.status_code == 422:
+            # Ensure consistent format for 422 errors
+            if isinstance(e.detail, list):
+                raise e
+            raise HTTPException(status_code=422, detail=[{"msg": str(e.detail)}])
+        raise e
+    except Exception as e:
+        debug_log("ERROR", f"Failed to update channel: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) 

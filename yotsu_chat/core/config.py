@@ -86,6 +86,15 @@ class ReactionSettings(BaseSettings):
         "extra": "ignore"
     }
 
+class ChannelSettings(BaseSettings):
+    """Channel settings."""
+    max_name_length: int = 25
+
+    model_config = {
+        "env_prefix": "YOTSU_CHANNEL_",
+        "extra": "ignore"
+    }
+
 class Settings(BaseSettings):
     """Main application settings."""
     environment: EnvironmentMode = EnvironmentMode.DEV
@@ -96,6 +105,7 @@ class Settings(BaseSettings):
     file: FileSettings = FileSettings()
     rate_limit: RateLimitSettings = RateLimitSettings()
     reaction: ReactionSettings = ReactionSettings()
+    channel: ChannelSettings = ChannelSettings()
 
     model_config = {
         "env_file": ".env",

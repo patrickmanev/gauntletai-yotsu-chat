@@ -304,4 +304,4 @@ async def test_token_validation(client: AsyncClient):
     assert "Refresh token has been used" in reuse_response.json()["detail"]
 
 if __name__ == "__main__":
-    asyncio.run(test_auth_flow()) 
+    asyncio.run(test_auth_flow())

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends, HTTPException
 from yotsu_chat.core.ws_core import manager
 from yotsu_chat.core.presence import presence_manager
-from yotsu_chat.core.database import debug_log
+from yotsu_chat.utils import debug_log
 from yotsu_chat.core.config import get_settings
 import logging
 import json

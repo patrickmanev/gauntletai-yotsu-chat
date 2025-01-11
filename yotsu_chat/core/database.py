@@ -7,13 +7,9 @@ import logging
 import os
 
 from .config import get_settings, EnvironmentMode
+from ..utils import debug_log
 
 logger = logging.getLogger(__name__)
-
-def debug_log(category: str, message: str) -> None:
-    """Print debug message with timestamp and category"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] [{category}] {message}")
 
 # Get settings instance
 settings = get_settings()
@@ -137,26 +133,86 @@ async def init_db(force: bool = False):
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS channels (
                     channel_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    type TEXT NOT NULL DEFAULT 'public',
+                    name TEXT CHECK (
+                        name IS NULL OR (
+                            length(name) <= 25 AND
+                            lower(name) = name
+                        )
+                    ),
+                    type TEXT NOT NULL CHECK (type IN ('public', 'private', 'dm', 'notes')),
                     created_by INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (created_by) REFERENCES users (user_id)
+                    FOREIGN KEY (created_by) REFERENCES users (user_id),
+                    CHECK (
+                        (type IN ('public', 'private') AND name IS NOT NULL) OR
+                        (type IN ('dm', 'notes') AND name IS NULL)
+                    )
                 )
             """)
             
-            # Create channels_members table
+            # Create channels_members table with enhanced constraints
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS channels_members (
                     channel_id INTEGER NOT NULL,
                     user_id INTEGER NOT NULL,
-                    role TEXT NOT NULL DEFAULT 'member',
+                    role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member')),
                     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (channel_id, user_id),
                     FOREIGN KEY (channel_id) REFERENCES channels (channel_id),
                     FOREIGN KEY (user_id) REFERENCES users (user_id)
                 )
+            """)
+
+            # Create trigger to enforce DM channel member count
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS check_dm_members
+                BEFORE INSERT ON channels_members
+                WHEN (SELECT type FROM channels WHERE channel_id = NEW.channel_id) = 'dm'
+                BEGIN
+                    SELECT CASE 
+                        WHEN (
+                            SELECT COUNT(*) 
+                            FROM channels_members 
+                            WHERE channel_id = NEW.channel_id
+                        ) >= 2
+                        THEN RAISE(ABORT, 'DM channels cannot have more than 2 members')
+                    END;
+                END;
+            """)
+
+            # Create trigger to enforce Notes channel single member
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS check_notes_members
+                BEFORE INSERT ON channels_members
+                WHEN (SELECT type FROM channels WHERE channel_id = NEW.channel_id) = 'notes'
+                BEGIN
+                    SELECT CASE 
+                        WHEN (
+                            SELECT COUNT(*) 
+                            FROM channels_members 
+                            WHERE channel_id = NEW.channel_id
+                        ) >= 1
+                        THEN RAISE(ABORT, 'Notes channels can only have 1 member')
+                    END;
+                END;
+            """)
+
+            # Create trigger to cleanup empty public/private channels
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS cleanup_empty_channels
+                AFTER DELETE ON channels_members
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM channels_members 
+                    WHERE channel_id = OLD.channel_id
+                )
+                AND (
+                    SELECT type FROM channels 
+                    WHERE channel_id = OLD.channel_id
+                ) IN ('public', 'private')
+                BEGIN
+                    DELETE FROM channels WHERE channel_id = OLD.channel_id;
+                END;
             """)
             
             # Create messages table
@@ -167,14 +223,12 @@ async def init_db(force: bool = False):
                     user_id INTEGER NOT NULL,
                     content TEXT NOT NULL,
                     parent_id INTEGER,
-                    thread_id INTEGER,
                     is_deleted BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (channel_id) REFERENCES channels (channel_id),
                     FOREIGN KEY (user_id) REFERENCES users (user_id),
-                    FOREIGN KEY (parent_id) REFERENCES messages (message_id),
-                    FOREIGN KEY (thread_id) REFERENCES messages (message_id)
+                    FOREIGN KEY (parent_id) REFERENCES messages (message_id)
                 )
             """)
             

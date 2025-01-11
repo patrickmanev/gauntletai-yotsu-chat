@@ -1,24 +1,24 @@
 from fastapi import APIRouter, Depends, HTTPException
-from yotsu_chat.core.auth import (
-    get_current_user, get_current_temp_user,
-    create_access_token, create_temp_token, create_refresh_token,
-    get_password_hash, verify_password, verify_totp, verify_refresh_token
-)
-from yotsu_chat.schemas.auth import (
+from ...core.auth import get_current_user, get_current_temp_user
+from ...schemas.auth import (
     UserRegister, UserLogin, UserResponse,
     TokenResponse, TOTPVerify, RefreshRequest
 )
-from yotsu_chat.core.database import get_db, debug_log
-from yotsu_chat.core.config import get_settings
-import pyotp
+from ...core.database import get_db
+from ...core.config import get_settings
+from ...services.auth_service import auth_service
+from ...services.token_service import token_service
+from ...utils import debug_log
 import aiosqlite
-from jose import jwt, JWTError, ExpiredSignatureError
-import os
+from jose import JWTError, ExpiredSignatureError
 from datetime import datetime, UTC
 from pydantic import BaseModel, EmailStr
 from typing import Dict, Any, Optional
+import logging
+from ...services.channel_service import channel_service
+from ...services.auth_service import auth_service
 
-# Get settings instance
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # Temporary storage for users completing registration
@@ -84,15 +84,15 @@ async def register(
             debug_log("AUTH", f"└─ New name: {user.display_name}")
             
             # If details match exactly, allow retry
-            if (verify_password(user.password, existing_attempt["password_hash"]) and
+            if (auth_service.verify_password(user.password, existing_attempt["password_hash"]) and
                 existing_attempt["display_name"] == user.display_name):
                 debug_log("AUTH", "Details match, allowing retry")
                 # Return the same TOTP details for retry
                 return UserResponse(
-                    temp_token=create_temp_token(user.email),
-                    totp_uri=pyotp.TOTP(existing_attempt["totp_secret"]).provisioning_uri(
-                        name=user.email,
-                        issuer_name="Yotsu Chat"
+                    temp_token=token_service.create_temp_token(user.email),
+                    totp_uri=auth_service.get_totp_uri(
+                        existing_attempt["totp_secret"],
+                        user.email
                     )
                 )
             else:
@@ -114,18 +114,14 @@ async def register(
         
         debug_log("AUTH", "Generating TOTP secret")
         # Generate TOTP secret
-        totp_secret: str = pyotp.random_base32()
-        totp: pyotp.TOTP = pyotp.TOTP(totp_secret)
-        totp_uri: str = totp.provisioning_uri(
-            name=user.email,
-            issuer_name="Yotsu Chat"
-        )
+        totp_secret = auth_service.generate_totp_secret()
+        totp_uri = auth_service.get_totp_uri(totp_secret, user.email)
         
         # Hash password
-        password_hash: str = get_password_hash(user.password)
+        password_hash = auth_service.get_password_hash(user.password)
         
         # Store registration data temporarily
-        temp_token: str = create_temp_token(user.email)
+        temp_token = token_service.create_temp_token(user.email)
         temp_registrations[user.email] = {
             "email": user.email,
             "password_hash": password_hash,
@@ -155,8 +151,8 @@ async def verify_2fa(
         debug_log("AUTH", f"2FA verification attempt: {current_user}")
         
         # Determine if this is a login or registration flow
-        user_id: Optional[int] = current_user.get("user_id")
-        email: Optional[str] = current_user.get("email")
+        user_id = current_user.get("user_id")
+        email = current_user.get("email")
         
         # Login flow - verify against database
         if user_id is not None:
@@ -179,15 +175,15 @@ async def verify_2fa(
                     debug_log("AUTH", "Test mode, accepting any code")
                 else:
                     # Verify TOTP code
-                    if not verify_totp(user_data["totp_secret"], totp_data.totp_code):
+                    if not auth_service.verify_totp(user_data["totp_secret"], totp_data.totp_code):
                         debug_log("AUTH", "TOTP verification failed")
                         raise HTTPException(status_code=401, detail="Invalid TOTP code")
                 
                 debug_log("AUTH", "TOTP verification successful")
                 
                 # Create tokens
-                access_token: str = create_access_token({"user_id": user_id})
-                refresh_token: str = create_refresh_token({"user_id": user_id})
+                access_token = token_service.create_access_token({"user_id": user_id})
+                refresh_token = token_service.create_refresh_token({"user_id": user_id})
                 return TokenResponse(access_token=access_token, refresh_token=refresh_token)
         
         # Registration flow - verify against temp storage
@@ -197,7 +193,7 @@ async def verify_2fa(
             # Clean up any expired registration attempts
             cleanup_expired_registrations()
             
-            temp_data: Optional[Dict[str, Any]] = temp_registrations.get(email)
+            temp_data = temp_registrations.get(email)
             debug_log("AUTH", f"Found temp registration data: {bool(temp_data)}")
             
             if not temp_data:
@@ -205,7 +201,7 @@ async def verify_2fa(
                 raise HTTPException(status_code=401, detail="Invalid TOTP code")
             
             # Check if registration is expired (5 minutes)
-            current_time: float = datetime.now(UTC).timestamp()
+            current_time = datetime.now(UTC).timestamp()
             if current_time - temp_data["created_at"] > REGISTRATION_EXPIRY_SECONDS:
                 debug_log("AUTH", f"Registration expired. Created at: {temp_data['created_at']}")
                 del temp_registrations[email]
@@ -218,7 +214,7 @@ async def verify_2fa(
                 debug_log("AUTH", "Test mode, accepting any code")
             else:
                 # Verify TOTP code
-                if not verify_totp(temp_data["totp_secret"], totp_data.totp_code):
+                if not auth_service.verify_totp(temp_data["totp_secret"], totp_data.totp_code):
                     debug_log("AUTH", "TOTP verification failed")
                     raise HTTPException(status_code=401, detail="Invalid TOTP code")
             
@@ -235,6 +231,10 @@ async def verify_2fa(
                  temp_data["display_name"], temp_data["totp_secret"])
             ) as cursor:
                 user_data = await cursor.fetchone()
+            
+            # Create Notes channel for the user
+            await channel_service.create_notes_channel(db, user_data["user_id"])
+            
             await db.commit()
             
             debug_log("AUTH", f"Created user with ID: {user_data['user_id']}")
@@ -245,8 +245,8 @@ async def verify_2fa(
             del temp_registrations[email]
             
             # Create tokens
-            access_token: str = create_access_token({"user_id": user_data["user_id"]})
-            refresh_token: str = create_refresh_token({"user_id": user_data["user_id"]})
+            access_token = token_service.create_access_token({"user_id": user_data["user_id"]})
+            refresh_token = token_service.create_refresh_token({"user_id": user_data["user_id"]})
             return TokenResponse(access_token=access_token, refresh_token=refresh_token)
         
         else:
@@ -290,7 +290,7 @@ async def login(
         debug_log("AUTH", f"└─ TOTP enabled: {bool(user_data['totp_secret'])}")
     
     # Verify password
-    password_valid: bool = verify_password(user.password, user_data["password_hash"])
+    password_valid = auth_service.verify_password(user.password, user_data["password_hash"])
     
     if not password_valid:
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -300,13 +300,13 @@ async def login(
     # In test mode, bypass 2FA and return access token directly
     if settings.is_test_mode:
         debug_log("AUTH", "Test mode, bypassing 2FA")
-        access_token: str = create_access_token({"user_id": user_data["user_id"]})
-        refresh_token: str = create_refresh_token({"user_id": user_data["user_id"]})
+        access_token = token_service.create_access_token({"user_id": user_data["user_id"]})
+        refresh_token = token_service.create_refresh_token({"user_id": user_data["user_id"]})
         return TokenResponse(access_token=access_token, refresh_token=refresh_token)
     
     # Create temporary token for 2FA
     debug_log("AUTH", "Creating temporary token for 2FA")
-    temp_token: str = create_temp_token(user_data["user_id"])
+    temp_token = token_service.create_temp_token(user_data["user_id"])
     debug_log("AUTH", "Proceeding to 2FA verification")
     return TokenResponse(temp_token=temp_token)
 
@@ -318,25 +318,30 @@ async def refresh_token(
     try:
         debug_log("AUTH", "Token refresh attempt")
         # Verify and invalidate refresh token
-        payload: Dict[str, Any] = verify_refresh_token(refresh_data.refresh_token)
-        user_id: Optional[int] = payload.get("user_id")
+        payload = token_service.verify_refresh_token(refresh_data.refresh_token)
+        user_id = payload.get("user_id")
         if not user_id:
             debug_log("AUTH", "Invalid refresh token: no user_id")
             raise HTTPException(status_code=401, detail="Invalid refresh token")
         
         # Check if user exists
+        await channel_service.verify_user_exists(db, user_id)
+        
+        # Get user info
         async with db.execute(
-            "SELECT 1 FROM users WHERE user_id = ?",
+            """
+            SELECT user_id, email, display_name, created_at
+            FROM users
+            WHERE user_id = ?
+            """,
             (user_id,)
         ) as cursor:
-            if not await cursor.fetchone():
-                debug_log("AUTH", f"User not found for refresh: {user_id}")
-                raise HTTPException(status_code=401, detail="User not found")
+            user_data = dict(await cursor.fetchone())
         
         debug_log("AUTH", f"Creating new tokens for user: {user_id}")
         # Create new tokens
-        access_token: str = create_access_token({"user_id": user_id})
-        refresh_token: str = create_refresh_token({"user_id": user_id})
+        access_token = token_service.create_access_token({"user_id": user_id})
+        refresh_token = token_service.create_refresh_token({"user_id": user_id})
         
         debug_log("AUTH", "Token refresh successful")
         return TokenResponse(access_token=access_token, refresh_token=refresh_token)

@@ -8,6 +8,7 @@ class ErrorCode:
     INVALID_TOKEN = 1003
     INVALID_2FA = 1004
     UNAUTHORIZED = 1005
+    FORBIDDEN = 1006
     
     # Message errors (2000-2999)
     MESSAGE_NOT_FOUND = 2001
@@ -43,6 +44,9 @@ class YotsuError(HTTPException):
 
 def raise_unauthorized(message: str = "Not authorized", details: Optional[dict] = None):
     raise YotsuError(401, ErrorCode.UNAUTHORIZED, message, details)
+
+def raise_forbidden(message: str = "Forbidden", details: Optional[dict] = None):
+    raise YotsuError(403, ErrorCode.FORBIDDEN, message, details)
 
 def raise_invalid_credentials(message: str = "Invalid credentials", details: Optional[dict] = None):
     raise YotsuError(401, ErrorCode.INVALID_CREDENTIALS, message, details)

@@ -238,7 +238,7 @@ async def test_channel(client: AsyncClient, access_token: str) -> Dict[str, Any]
     """Create a test channel and return its data"""
     response = await client.post(
         "/api/channels",
-        json={"name": "Test-Channel"},
+        json={"name": "test-channel", "type": "public"},
         headers={"Authorization": f"Bearer {access_token}"}
     )
     assert response.status_code == 201
@@ -281,8 +281,8 @@ async def test_message(client: AsyncClient, access_token: str, test_channel: Dic
     channel_id = test_channel["channel_id"]
     
     response = await client.post(
-        f"/api/messages/channels/{channel_id}",
-        json={"content": "Test message for reactions"},
+        "/api/messages",
+        json={"content": "Test message for reactions", "channel_id": channel_id},
         headers={"Authorization": f"Bearer {access_token}"}
     )
     assert response.status_code == 201

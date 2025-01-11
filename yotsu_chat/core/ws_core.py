@@ -6,9 +6,9 @@ from contextlib import suppress
 from datetime import datetime, timedelta
 from .auth import decode_token
 from ..utils.errors import YotsuError, ErrorCode
+from ..utils import debug_log
 import logging
 from .config import get_settings
-from yotsu_chat.core.database import debug_log
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -124,8 +124,17 @@ class ConnectionManager:
                     del self.channel_connections[channel_id]
                 logger.info(f"Removed connection {connection_id} from channel {channel_id}")
     
-    async def broadcast_to_channel(self, channel_id: int, message: dict):
-        """Broadcast message to all connections in a channel"""
+    async def broadcast_to_channel(self, channel_id: int, message: dict) -> None:
+        """Broadcast a message to all connections in a channel."""
+        # Initialize channel if needed
+        await self.initialize_channel(channel_id)
+        
+        # Get active connections for channel
+        connections = self.channel_connections.get(channel_id, set())
+        if not connections:
+            debug_log("WS", f"No clients connected to channel {channel_id} for broadcast")
+            return
+        
         async with self._lock:
             logger.info(f"Broadcasting to channel {channel_id}")
             
@@ -282,6 +291,12 @@ class ConnectionManager:
                 await self.disconnect(connection_id)
         else:
             logger.warning(f"Attempted to send to non-existent connection {connection_id}")
+    
+    async def initialize_channel(self, channel_id: int) -> None:
+        """Initialize a WebSocket channel if it doesn't exist."""
+        if channel_id not in self.channel_connections:
+            self.channel_connections[channel_id] = set()
+            debug_log("WS", f"Initialized WebSocket channel {channel_id}")
 
 # Global connection manager instance
 manager = ConnectionManager() 

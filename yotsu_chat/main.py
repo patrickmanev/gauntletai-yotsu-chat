@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from yotsu_chat.core.database import init_db
-from yotsu_chat.api.routes import auth, channels, messages, reactions, websocket
+from yotsu_chat.api.routes import auth, channels, messages, reactions, websocket, members
 import os
 
 app = FastAPI()
@@ -20,6 +20,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(channels.router, prefix="/api")
 app.include_router(messages.router, prefix="/api")
 app.include_router(reactions.router, prefix="/api")
+app.include_router(members.router, prefix="/api")
 app.include_router(websocket.router)  # WebSocket router doesn't need prefix
 
 @app.on_event("startup")
