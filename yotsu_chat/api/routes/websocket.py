@@ -2,12 +2,14 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends, H
 from yotsu_chat.core.ws_core import manager
 from yotsu_chat.core.presence import presence_manager
 from yotsu_chat.core.database import debug_log
+from yotsu_chat.core.config import get_settings
 import logging
 import json
 import uuid
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+settings = get_settings()
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

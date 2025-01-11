@@ -1,13 +1,19 @@
 import os
-# Set test mode for the entire test session
-os.environ["TEST_MODE"] = "1"
 
-import pytest
-from typing import AsyncGenerator, Dict, Any, Union
-import pytest_asyncio
-from httpx import AsyncClient
+# Set required environment variables before importing anything else
+os.environ["YOTSU_ENVIRONMENT"] = "test"
+os.environ["YOTSU_JWT_ACCESS_TOKEN_SECRET_KEY"] = "test-access-secret"
+os.environ["YOTSU_JWT_REFRESH_TOKEN_SECRET_KEY"] = "test-refresh-secret"
+os.environ["YOTSU_JWT_TEMP_TOKEN_SECRET_KEY"] = "test-temp-secret"
+
+# Now we can safely import everything else
+from pathlib import Path
 import aiosqlite
 import asyncio
+from typing import AsyncGenerator, Dict, Any, Union
+import pytest
+import pytest_asyncio
+from httpx import AsyncClient
 from fastapi.testclient import TestClient
 from fastapi.routing import APIRoute, APIWebSocketRoute
 import pyotp
@@ -15,9 +21,28 @@ import jwt
 
 from yotsu_chat.main import app
 from yotsu_chat.core.database import init_db
-from yotsu_chat.core.auth import SECRET_KEY, ALGORITHM
+from yotsu_chat.core.config import get_settings, Settings, EnvironmentMode
+
+# Get settings instance (will be in test mode due to environment variable)
+settings = get_settings()
 
 pytest_plugins = ["pytest_asyncio"]
+
+@pytest.fixture(autouse=True)
+def setup_test_environment():
+    """Setup test environment variables."""
+    # Store original environment
+    original_env = os.environ.copy()
+    yield
+    # Restore original environment
+    os.environ.clear()
+    os.environ.update(original_env)
+
+import pytest
+from typing import AsyncGenerator, Dict, Any
+from httpx import AsyncClient
+from yotsu_chat.main import app
+from yotsu_chat.core.config import get_settings, Settings, EnvironmentMode
 
 @pytest.fixture(scope="function")
 def event_loop():
@@ -34,21 +59,21 @@ def event_loop():
 
 async def cleanup_database():
     """Helper to clean up the database"""
-    test_db_path = "data/db/test/test_yotsu_chat.db"
-    test_db_dir = os.path.dirname(test_db_path)
+    test_db_path = settings.db.get_db_path(settings.environment)
+    test_db_dir = test_db_path.parent
     
     # Ensure the directory exists
-    os.makedirs(test_db_dir, exist_ok=True)
+    test_db_dir.mkdir(parents=True, exist_ok=True)
     
     # Clean up any existing database
-    if os.path.exists(test_db_path):
+    if test_db_path.exists():
         for _ in range(3):  # Try up to 3 times
             try:
                 # Close any open connections and delete the file
-                db = await aiosqlite.connect(test_db_path)
+                db = await aiosqlite.connect(str(test_db_path))
                 await db.close()
                 await asyncio.sleep(0.1)  # Give the OS time to release the file
-                os.remove(test_db_path)
+                test_db_path.unlink()
                 break
             except Exception as e:
                 print(f"Failed to cleanup database: {e}")
@@ -121,7 +146,11 @@ async def create_test_user(client: Union[TestClient, AsyncClient], email: str, p
     tokens = verify_response.json()
     
     # Extract user_id from access token
-    payload = jwt.decode(tokens["access_token"], SECRET_KEY, algorithms=[ALGORITHM])
+    payload = jwt.decode(
+        tokens["access_token"], 
+        settings.jwt.access_token_secret_key, 
+        algorithms=[settings.jwt.token_algorithm]
+    )
     return payload["user_id"]
 
 async def register_test_user(
@@ -153,7 +182,11 @@ async def register_test_user(
     tokens = verify_response.json()
     
     # Extract user_id from access token
-    payload = jwt.decode(tokens["access_token"], SECRET_KEY, algorithms=[ALGORITHM])
+    payload = jwt.decode(
+        tokens["access_token"], 
+        settings.jwt.access_token_secret_key, 
+        algorithms=[settings.jwt.token_algorithm]
+    )
     
     return {
         "user_id": payload["user_id"],

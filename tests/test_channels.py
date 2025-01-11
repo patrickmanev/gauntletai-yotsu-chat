@@ -1,14 +1,24 @@
 import pytest
 from httpx import AsyncClient
 from typing import Dict, Any
-import os
 import asyncio
 from tests.conftest import register_test_user
+from yotsu_chat.core.config import get_settings
 
 pytestmark = pytest.mark.asyncio
 
+# Get settings instance
+settings = get_settings()
+
 async def test_channel_operations(client: AsyncClient):
-    """Test channel operations"""
+    """Test comprehensive channel operations including:
+    1. Channel creation with initial members
+    2. Channel listing for different user roles
+    3. Member listing
+    4. Member addition and removal
+    5. Duplicate member handling
+    6. Permission checks for different roles
+    """
     print("\n1. Setting up test users...")
     
     # Create test users
@@ -49,7 +59,7 @@ async def test_channel_operations(client: AsyncClient):
     channel_id = channel_data["channel_id"]
     
     print("\n3. Testing channel listing...")
-    # List channels for user1
+    # List channels for user1 (owner)
     response = await client.get(
         "/api/channels",
         headers={"Authorization": f"Bearer {user1['access_token']}"}
@@ -60,7 +70,7 @@ async def test_channel_operations(client: AsyncClient):
     assert channels[0]["channel_id"] == channel_id
     assert channels[0]["role"] == "owner"
     
-    # List channels for user2
+    # List channels for user2 (member)
     response = await client.get(
         "/api/channels",
         headers={"Authorization": f"Bearer {user2['access_token']}"}

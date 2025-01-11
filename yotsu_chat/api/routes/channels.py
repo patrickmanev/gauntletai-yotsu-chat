@@ -26,11 +26,11 @@ async def create_channel(
         # Create channel
         async with db.execute(
             """
-            INSERT INTO channels (name, type)
-            VALUES (?, ?)
+            INSERT INTO channels (name, type, created_by)
+            VALUES (?, ?, ?)
             RETURNING channel_id, name, type, created_at
             """,
-            (channel.name, channel.type)
+            (channel.name, channel.type, current_user["user_id"])
         ) as cursor:
             channel_data = await cursor.fetchone()
         

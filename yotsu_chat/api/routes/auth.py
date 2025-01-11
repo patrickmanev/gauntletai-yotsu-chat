@@ -2,22 +2,24 @@ from fastapi import APIRouter, Depends, HTTPException
 from yotsu_chat.core.auth import (
     get_current_user, get_current_temp_user,
     create_access_token, create_temp_token, create_refresh_token,
-    get_password_hash, verify_password, verify_totp, verify_refresh_token,
-    REFRESH_SECRET_KEY, ALGORITHM
+    get_password_hash, verify_password, verify_totp, verify_refresh_token
 )
 from yotsu_chat.schemas.auth import (
     UserRegister, UserLogin, UserResponse,
     TokenResponse, TOTPVerify, RefreshRequest
 )
 from yotsu_chat.core.database import get_db, debug_log
+from yotsu_chat.core.config import get_settings
 import pyotp
 import aiosqlite
 from jose import jwt, JWTError, ExpiredSignatureError
-from yotsu_chat.core.config import get_settings
 import os
 from datetime import datetime, UTC
 from pydantic import BaseModel, EmailStr
 from typing import Dict, Any, Optional
+
+# Get settings instance
+settings = get_settings()
 
 # Temporary storage for users completing registration
 temp_registrations: Dict[str, Dict[str, Any]] = {}
@@ -168,12 +170,12 @@ async def verify_2fa(
                 user_data = await cursor.fetchone()
                 if not user_data:
                     debug_log("AUTH", f"User not found for 2FA: {user_id}")
-                    raise HTTPException(status_code=400, detail="User not found")
+                    raise HTTPException(status_code=401, detail="Invalid TOTP code")
                 
                 debug_log("AUTH", "Verifying TOTP code against database secret")
                 
                 # In test mode, accept any code
-                if os.getenv("TEST_MODE") == "1":
+                if settings.is_test_mode:
                     debug_log("AUTH", "Test mode, accepting any code")
                 else:
                     # Verify TOTP code
@@ -200,19 +202,19 @@ async def verify_2fa(
             
             if not temp_data:
                 debug_log("AUTH", "Registration expired or invalid")
-                raise HTTPException(status_code=400, detail="Registration expired or invalid")
+                raise HTTPException(status_code=401, detail="Invalid TOTP code")
             
             # Check if registration is expired (5 minutes)
             current_time: float = datetime.now(UTC).timestamp()
             if current_time - temp_data["created_at"] > REGISTRATION_EXPIRY_SECONDS:
                 debug_log("AUTH", f"Registration expired. Created at: {temp_data['created_at']}")
                 del temp_registrations[email]
-                raise HTTPException(status_code=400, detail="Registration expired")
+                raise HTTPException(status_code=401, detail="Invalid TOTP code")
             
             debug_log("AUTH", "Verifying TOTP code")
             
             # In test mode, accept any code
-            if os.getenv("TEST_MODE") == "1":
+            if settings.is_test_mode:
                 debug_log("AUTH", "Test mode, accepting any code")
             else:
                 # Verify TOTP code
@@ -249,13 +251,13 @@ async def verify_2fa(
         
         else:
             debug_log("AUTH", "Invalid token data for 2FA")
-            raise HTTPException(status_code=400, detail="Invalid token data")
+            raise HTTPException(status_code=401, detail="Invalid TOTP code")
             
     except HTTPException:
         raise
     except Exception as e:
         debug_log("ERROR", f"2FA verification failed: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=401, detail="Invalid TOTP code")
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
@@ -288,9 +290,7 @@ async def login(
         debug_log("AUTH", f"└─ TOTP enabled: {bool(user_data['totp_secret'])}")
     
     # Verify password
-    debug_log("AUTH", "Verifying password")
     password_valid: bool = verify_password(user.password, user_data["password_hash"])
-    debug_log("AUTH", f"Password verification: {'success' if password_valid else 'failed'}")
     
     if not password_valid:
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -298,7 +298,7 @@ async def login(
     debug_log("AUTH", "Authentication successful")
     
     # In test mode, bypass 2FA and return access token directly
-    if os.getenv("TEST_MODE") == "1":
+    if settings.is_test_mode:
         debug_log("AUTH", "Test mode, bypassing 2FA")
         access_token: str = create_access_token({"user_id": user_data["user_id"]})
         refresh_token: str = create_refresh_token({"user_id": user_data["user_id"]})

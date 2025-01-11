@@ -7,10 +7,11 @@ from datetime import datetime, timedelta
 from .auth import decode_token
 from ..utils.errors import YotsuError, ErrorCode
 import logging
-import os
+from .config import get_settings
 from yotsu_chat.core.database import debug_log
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 class WebSocketError(Exception):
     def __init__(self, code: int, message: str):
@@ -38,7 +39,7 @@ class ConnectionManager:
                 raise WebSocketError(1008, "Missing authentication token")
             
             # In test mode, extract user_id from query params
-            if os.getenv("TEST_MODE") == "true":
+            if settings.is_test_mode:
                 user_id = int(websocket.query_params.get("user_id", "1"))
                 return user_id
             

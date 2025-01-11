@@ -6,8 +6,27 @@ import asyncio
 from datetime import datetime, timedelta
 import pyotp
 from jose import jwt
+from contextlib import contextmanager
+
+from yotsu_chat.core.config import get_settings, EnvironmentMode
 
 pytestmark = pytest.mark.asyncio
+
+# Get settings instance
+settings = get_settings()
+
+@contextmanager
+def temp_env_mode(mode: EnvironmentMode):
+    """Temporarily change the environment mode."""
+    original_mode = os.getenv("YOTSU_ENVIRONMENT")
+    os.environ["YOTSU_ENVIRONMENT"] = mode.value
+    try:
+        yield
+    finally:
+        if original_mode is not None:
+            os.environ["YOTSU_ENVIRONMENT"] = original_mode
+        else:
+            del os.environ["YOTSU_ENVIRONMENT"]
 
 async def test_auth_flow(client: AsyncClient):
     """Test the complete authentication flow"""
@@ -51,7 +70,7 @@ async def test_auth_flow(client: AsyncClient):
     
     # Check if we're in test mode (access token returned) or normal mode (temp token returned)
     response_data = response.json()
-    if "access_token" in response_data:
+    if settings.is_test_mode:
         # Test mode - we already have the tokens
         access_token = response_data["access_token"]
         refresh_token = response_data["refresh_token"]
@@ -120,11 +139,8 @@ async def test_invalid_credentials(client: AsyncClient):
 
 async def test_token_security(client: AsyncClient):
     """Test token security and access control"""
-    # Temporarily disable test mode
-    original_test_mode = os.getenv("TEST_MODE")
-    os.environ["TEST_MODE"] = "false"
-    
-    try:
+    # Temporarily switch to dev mode to test normal flow
+    with temp_env_mode(EnvironmentMode.DEV):
         # Register and login
         register_response = await client.post("/api/auth/register", json={
             "email": "test@example.com",
@@ -163,12 +179,6 @@ async def test_token_security(client: AsyncClient):
                 headers={"Authorization": f"Bearer {login_data['temp_token']}"})
             assert response.status_code == 401
             assert "Invalid TOTP code" in response.json()["detail"]
-    finally:
-        # Restore original test mode
-        if original_test_mode is not None:
-            os.environ["TEST_MODE"] = original_test_mode
-        else:
-            del os.environ["TEST_MODE"]
 
 async def test_duplicate_registration(client: AsyncClient):
     """Test registration with duplicate email"""

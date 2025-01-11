@@ -3,11 +3,15 @@ from yotsu_chat.core.auth import get_current_user
 from yotsu_chat.schemas.reaction import ReactionCreate, ReactionResponse, ReactionCount
 from yotsu_chat.core.database import get_db
 from yotsu_chat.core.ws_core import manager as ws_manager
+from yotsu_chat.core.config import get_settings
 from typing import List
 import aiosqlite
 import json
 
 router = APIRouter(prefix="/reactions", tags=["reactions"])
+
+# Get settings instance
+settings = get_settings()
 
 @router.post("/messages/{message_id}", response_model=ReactionResponse, status_code=201)
 async def add_reaction(
@@ -42,10 +46,10 @@ async def add_reaction(
         (message_id, reaction.emoji)
     ) as cursor:
         existing_reaction = await cursor.fetchone()
-        if not existing_reaction and unique_emoji_count >= 12:
+        if not existing_reaction and unique_emoji_count >= settings.reaction.max_unique_emojis:
             raise HTTPException(
                 status_code=400,
-                detail="Maximum number of unique emoji reactions (12) reached for this message"
+                detail=f"Maximum number of unique emoji reactions ({settings.reaction.max_unique_emojis}) reached for this message"
             )
     
     try:

@@ -149,27 +149,6 @@ export default function AuthPage() {
 
   const handleTOTP = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    try {
-      const response = await fetch('/api/auth/verify-2fa', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tempToken}`
-        },
-        body: JSON.stringify({ totp_code: totpCode }),
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setTokens(data.access_token, data.refresh_token);
-        router.push('/client');
-      } else {
-        setValidationMessage("TOTP code is invalid. Please try again.");
-      }
-    } catch (error) {
-      setValidationMessage("TOTP code is invalid. Please try again.");
-    }
   };
 
   return (

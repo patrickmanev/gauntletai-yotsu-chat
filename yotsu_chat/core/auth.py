@@ -8,16 +8,12 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import secrets
 from fastapi import WebSocket
 from fastapi import WebSocketDisconnect
-import os
-from yotsu_chat.core.database import debug_log
 
-# Security configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
-REFRESH_SECRET_KEY = os.getenv("JWT_REFRESH_SECRET_KEY", secrets.token_urlsafe(32))
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-REFRESH_TOKEN_EXPIRE_MINUTES = 43200  # 30 days
-TEMP_TOKEN_EXPIRE_MINUTES = 5
+from .config import get_settings
+from .database import debug_log
+
+# Get settings instance
+settings = get_settings()
 
 # Token tracking
 used_refresh_tokens = set()  # Set of used refresh token JTIs
@@ -32,12 +28,21 @@ def get_password_hash(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash"""
     try:
-        debug_log("AUTH", "Verifying password")
-        debug_log("AUTH", f"├─ Plain password length: {len(plain_password)}")
-        debug_log("AUTH", f"└─ Hashed password length: {len(hashed_password)}")
+        debug_log("AUTH", "Starting password verification")
+        
+        # Check for valid UTF-8 encoding
+        try:
+            plain_password.encode()
+            hashed_password.encode()
+        except UnicodeEncodeError as e:
+            debug_log("AUTH", f"Password encoding error: {str(e)}")
+            return False
+            
+        # Verify password
         result = bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
-        debug_log("AUTH", f"Password verification: {'success' if result else 'failed'}")
+        debug_log("AUTH", f"Password verification {'succeeded' if result else 'failed'}")
         return result
+        
     except Exception as e:
         debug_log("ERROR", f"Password verification error: {str(e)}")
         return False
@@ -48,24 +53,24 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     if expires_delta:
         expire = datetime.now(UTC) + expires_delta
     else:
-        expire = datetime.now(UTC) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(UTC) + timedelta(minutes=settings.jwt.access_token_expire_minutes)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, settings.jwt.access_token_secret_key, algorithm=settings.jwt.token_algorithm)
     return encoded_jwt
 
 def create_refresh_token(data: dict) -> str:
     """Create a JWT refresh token with a unique JTI"""
     to_encode = data.copy()
-    expire = datetime.now(UTC) + timedelta(minutes=REFRESH_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(UTC) + timedelta(days=settings.jwt.refresh_token_expire_days)
     jti = secrets.token_urlsafe(16)  # Generate unique token ID
     to_encode.update({"exp": expire, "jti": jti})
-    encoded_jwt = jwt.encode(to_encode, REFRESH_SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, settings.jwt.refresh_token_secret_key, algorithm=settings.jwt.token_algorithm)
     return encoded_jwt
 
 def verify_refresh_token(token: str) -> dict:
     """Verify a refresh token and check if it's been used"""
     try:
-        payload = jwt.decode(token, REFRESH_SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, settings.jwt.refresh_token_secret_key, algorithms=[settings.jwt.token_algorithm])
         jti = payload.get("jti")
         if not jti:
             raise HTTPException(status_code=401, detail="Invalid refresh token")
@@ -81,7 +86,7 @@ def verify_refresh_token(token: str) -> dict:
 def decode_token(token: str) -> dict:
     """Decode and verify a JWT token"""
     try:
-        decoded_token = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        decoded_token = jwt.decode(token, settings.jwt.access_token_secret_key, algorithms=[settings.jwt.token_algorithm])
         return decoded_token
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")
@@ -119,7 +124,7 @@ def create_temp_token(data: str | int):
     """
     to_encode = {
         "temp": True,
-        "exp": datetime.now(UTC) + timedelta(minutes=TEMP_TOKEN_EXPIRE_MINUTES)
+        "exp": datetime.now(UTC) + timedelta(minutes=settings.jwt.temp_token_expire_minutes)
     }
     
     # Add either user_id or email based on the type of data
@@ -128,7 +133,7 @@ def create_temp_token(data: str | int):
     else:
         to_encode["email"] = data
         
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(to_encode, settings.jwt.temp_token_secret_key, algorithm=settings.jwt.token_algorithm)
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Get the current user from the JWT token."""
@@ -139,7 +144,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     )
     try:
         token = credentials.credentials
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, settings.jwt.access_token_secret_key, algorithms=[settings.jwt.token_algorithm])
         user_id = payload.get("user_id")
         if user_id is None:
             raise credentials_exception
@@ -157,13 +162,13 @@ async def get_current_temp_user(credentials: HTTPAuthorizationCredentials = Depe
     """Get the current user from a temporary JWT token."""
     try:
         token = credentials.credentials
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, settings.jwt.temp_token_secret_key, algorithms=[settings.jwt.token_algorithm])
         
         # Check if this is a temporary token
         if not payload.get("temp", False):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Only temporary tokens are allowed for this operation"
+                detail="Invalid TOTP code"
             )
         
         # Handle both user_id and email in payload
@@ -173,19 +178,19 @@ async def get_current_temp_user(credentials: HTTPAuthorizationCredentials = Depe
         if not (user_id or email):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials"
+                detail="Invalid TOTP code"
             )
         
         return {"user_id": user_id, "email": email}
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired"
+            detail="Invalid TOTP code"
         )
     except jwt.JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials"
+            detail="Invalid TOTP code"
         )
 
 async def get_current_user_ws(websocket: WebSocket) -> Dict[str, Any]:
@@ -198,8 +203,8 @@ async def get_current_user_ws(websocket: WebSocket) -> Dict[str, Any]:
         
         payload = jwt.decode(
             token,
-            SECRET_KEY,
-            algorithms=[ALGORITHM]
+            settings.jwt.access_token_secret_key,
+            algorithms=[settings.jwt.token_algorithm]
         )
         
         user_id = payload.get("user_id")

@@ -16,58 +16,79 @@ async def create_message(
     db = Depends(get_db)
 ):
     """Create a new message in a channel"""
-    async with db.cursor() as cur:
-        # Check if user is member of channel
-        await cur.execute("""
-            SELECT 1 FROM channels_members
-            WHERE channel_id = ? AND user_id = ?
-        """, (channel_id, current_user["user_id"]))
-        
-        if not await cur.fetchone():
-            raise_unauthorized("You are not a member of this channel")
-        
-        # If this is a reply, verify the parent message exists and is in the same channel
-        if message.parent_id:
-            await cur.execute("""
-                SELECT channel_id, parent_id FROM messages
-                WHERE message_id = ?
-            """, (message.parent_id,))
-            parent = await cur.fetchone()
+    # If this is a reply, verify the parent message exists and is in the same channel
+    parent = None
+    if message.parent_id:
+        async with db.execute(
+            "SELECT channel_id, parent_id, thread_id FROM messages WHERE message_id = ?",
+            (message.parent_id,)
+        ) as cursor:
+            parent = await cursor.fetchone()
             if not parent:
                 raise HTTPException(status_code=404, detail="Parent message not found")
             if parent["channel_id"] != channel_id:
                 raise HTTPException(status_code=400, detail="Parent message must be in the same channel")
             if parent["parent_id"] is not None:
                 raise HTTPException(status_code=400, detail="Cannot reply to a reply")
+    
+    try:
+        # Check if user is member of channel
+        async with db.execute(
+            "SELECT 1 FROM channels_members WHERE channel_id = ? AND user_id = ?",
+            (channel_id, current_user["user_id"])
+        ) as cursor:
+            if not await cursor.fetchone():
+                raise_unauthorized("You are not a member of this channel")
         
-        # Create message
-        await cur.execute("""
+        # Create message (without thread_id initially)
+        async with db.execute(
+            """
             INSERT INTO messages (channel_id, user_id, content, parent_id)
             VALUES (?, ?, ?, ?)
-        """, (channel_id, current_user["user_id"], message.content, message.parent_id))
+            RETURNING message_id
+            """,
+            (channel_id, current_user["user_id"], message.content, message.parent_id)
+        ) as cursor:
+            message_id = (await cursor.fetchone())[0]
         
-        message_id = cur.lastrowid
-        await db.commit()
+        # If this is a reply, update the thread_id
+        if message.parent_id:
+            thread_id = parent["thread_id"] if parent["thread_id"] else message.parent_id
+            await db.execute(
+                """
+                UPDATE messages
+                SET thread_id = ?
+                WHERE message_id = ?
+                """,
+                (thread_id, message_id)
+            )
         
         # Get message details for response
-        await cur.execute("""
+        async with db.execute(
+            """
             SELECT m.*, u.display_name
             FROM messages m
             JOIN users u ON m.user_id = u.user_id
             WHERE m.message_id = ?
-        """, (message_id,))
+            """,
+            (message_id,)
+        ) as cursor:
+            message_data = await cursor.fetchone()
+            if not message_data:
+                raise HTTPException(status_code=500, detail="Failed to retrieve created message")
+            
+            response = MessageResponse(
+                message_id=message_data["message_id"],
+                channel_id=message_data["channel_id"],
+                user_id=message_data["user_id"],
+                content=message_data["content"],
+                created_at=message_data["created_at"],
+                edited_at=message_data["updated_at"],
+                display_name=message_data["display_name"],
+                parent_id=message_data["parent_id"]
+            )
         
-        message_data = await cur.fetchone()
-        response = MessageResponse(
-            message_id=message_data["message_id"],
-            channel_id=message_data["channel_id"],
-            user_id=message_data["user_id"],
-            content=message_data["content"],
-            created_at=message_data["created_at"],
-            edited_at=message_data["edited_at"],
-            display_name=message_data["display_name"],
-            parent_id=message_data["parent_id"]
-        )
+        await db.commit()
         
         # Broadcast message creation to channel
         event = {
@@ -84,6 +105,9 @@ async def create_message(
         await ws_manager.broadcast_to_channel(channel_id, event)
         
         return response
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/channels/{channel_id}", response_model=list[MessageWithAttachments])
 async def list_messages(
@@ -164,7 +188,7 @@ async def list_messages(
                 user_id=msg["user_id"],
                 content=msg["content"],
                 created_at=msg["created_at"],
-                edited_at=msg["edited_at"],
+                edited_at=msg["updated_at"],
                 display_name=msg["display_name"],
                 parent_id=msg["parent_id"],
                 attachments=list(attachments)
@@ -199,7 +223,7 @@ async def update_message(
         # Update message
         await cur.execute("""
             UPDATE messages
-            SET content = ?, edited_at = CURRENT_TIMESTAMP
+            SET content = ?, updated_at = CURRENT_TIMESTAMP
             WHERE message_id = ?
         """, (message.content, message_id))
         
@@ -220,7 +244,7 @@ async def update_message(
             user_id=updated["user_id"],
             content=updated["content"],
             created_at=updated["created_at"],
-            edited_at=updated["edited_at"],
+            edited_at=updated["updated_at"],
             display_name=updated["display_name"],
             parent_id=updated["parent_id"]
         )
@@ -287,7 +311,7 @@ async def delete_message(
                 await cur.execute("""
                     UPDATE messages 
                     SET content = 'This message was deleted',
-                        edited_at = CURRENT_TIMESTAMP
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE message_id = ?
                 """, (message_id,))
                 
@@ -330,7 +354,24 @@ async def delete_message(
                 
                 has_other_replies = (await cur.fetchone())["has_other_replies"]
                 if not has_other_replies:
-                    # This was the last existing reply, delete the parent too
+                    # First delete all reactions and attachments for all replies
+                    await cur.execute("""
+                        DELETE FROM reactions WHERE message_id IN (
+                            SELECT message_id FROM messages WHERE parent_id = ?
+                        )
+                    """, (msg["parent_id"],))
+                    await cur.execute("""
+                        DELETE FROM attachments WHERE message_id IN (
+                            SELECT message_id FROM messages WHERE parent_id = ?
+                        )
+                    """, (msg["parent_id"],))
+                    # Then delete all replies
+                    await cur.execute("DELETE FROM messages WHERE parent_id = ?", (msg["parent_id"],))
+                    
+                    # Now delete reactions and attachments for the parent
+                    await cur.execute("DELETE FROM reactions WHERE message_id = ?", (msg["parent_id"],))
+                    await cur.execute("DELETE FROM attachments WHERE message_id = ?", (msg["parent_id"],))
+                    # Finally delete the parent message
                     await cur.execute("DELETE FROM messages WHERE message_id = ?", (msg["parent_id"],))
                     
                     # Broadcast parent message hard delete to channel
@@ -343,7 +384,11 @@ async def delete_message(
                     }
                     await ws_manager.broadcast_to_channel(msg["channel_id"], event)
         
-        # Delete the message
+        # Delete any reactions for this message
+        await cur.execute("DELETE FROM reactions WHERE message_id = ?", (message_id,))
+        # Delete any attachments for this message
+        await cur.execute("DELETE FROM attachments WHERE message_id = ?", (message_id,))
+        # Finally delete the message itself
         await cur.execute("DELETE FROM messages WHERE message_id = ?", (message_id,))
         await db.commit()
         

@@ -6,8 +6,12 @@ import asyncio
 from typing import Dict, Any, List
 from httpx import AsyncClient
 import uuid
+from yotsu_chat.core.config import get_settings, EnvironmentMode
 
 pytestmark = pytest.mark.asyncio
+
+# Get settings instance
+settings = get_settings()
 
 class MockWebSocket:
     def __init__(self):
@@ -48,10 +52,9 @@ async def cleanup_manager():
 
 async def test_websocket_authentication(access_token: str):
     """Test WebSocket authentication"""
-    # Temporarily disable test mode for this test
-    import os
-    old_test_mode = os.getenv("TEST_MODE")
-    os.environ["TEST_MODE"] = "false"
+    # Temporarily set environment to non-test mode for this test
+    original_env = settings.environment
+    settings.environment = EnvironmentMode.DEV
     
     try:
         # Test missing token
@@ -73,10 +76,7 @@ async def test_websocket_authentication(access_token: str):
         user_id = await ws_manager.authenticate_connection(ws)
         assert user_id == 1  # First user created in tests
     finally:
-        if old_test_mode is not None:
-            os.environ["TEST_MODE"] = old_test_mode
-        else:
-            del os.environ["TEST_MODE"]
+        settings.environment = original_env
 
 async def test_websocket_health_check():
     """Test WebSocket health check mechanism"""
