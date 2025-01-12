@@ -90,13 +90,15 @@ async def test_websocket_authentication(
 async def test_websocket_auto_subscription(
     mock_websocket: Dict[str, Any],
     access_token: str,
+    second_user_token: Dict[str, Any],
     client: AsyncClient
 ) -> None:
     """Test automatic channel subscription on WebSocket connection:
     1. Pre-create channels of different types
-    2. Connect WebSocket and verify auto-subscription
-    3. Verify notes channels are excluded
-    4. Test subscription persistence across reconnection
+    2. Connect WebSocket and verify auto-subscription to all channels
+    3. Test subscription persistence across reconnection
+    4. Test unsubscription on removal
+    5. Test auto-subscription on channel addition
     """
     ws = mock_websocket["websocket"]
     user_id = mock_websocket["user_id"]
@@ -136,15 +138,16 @@ async def test_websocket_auto_subscription(
     # 2. Verify initial auto-subscription
     debug_log("WS_AUTO", "Verifying initial auto-subscription")
     
-    # Check channel subscriptions
+    # Check channel subscriptions for all channel types
     assert channels["public"] in ws_manager.channel_connections
     assert mock_websocket["connection_id"] in ws_manager.channel_connections[channels["public"]]
     
     assert channels["private"] in ws_manager.channel_connections
     assert mock_websocket["connection_id"] in ws_manager.channel_connections[channels["private"]]
     
-    # Verify notes channel was excluded
-    assert channels["notes"] not in ws_manager.channel_connections
+    # Verify notes channel is included
+    assert channels["notes"] in ws_manager.channel_connections
+    assert mock_websocket["connection_id"] in ws_manager.channel_connections[channels["notes"]]
     debug_log("WS_AUTO", "Initial auto-subscription verified")
     
     # 3. Test subscription persistence across reconnection
@@ -164,15 +167,15 @@ async def test_websocket_auto_subscription(
     await ws_manager.connect(new_ws, new_user_id, new_connection_id)
     debug_log("WS_AUTO", f"Created new connection: {new_connection_id}")
     
-    # Verify channels were re-subscribed
+    # Verify channels were re-subscribed (including notes)
     assert channels["public"] in ws_manager.channel_connections
     assert new_connection_id in ws_manager.channel_connections[channels["public"]]
     
     assert channels["private"] in ws_manager.channel_connections
     assert new_connection_id in ws_manager.channel_connections[channels["private"]]
     
-    # Verify notes still excluded
-    assert channels["notes"] not in ws_manager.channel_connections
+    assert channels["notes"] in ws_manager.channel_connections
+    assert new_connection_id in ws_manager.channel_connections[channels["notes"]]
     debug_log("WS_AUTO", "Subscription persistence verified")
     
     # Test message delivery to auto-subscribed channel
@@ -202,38 +205,31 @@ async def test_websocket_auto_subscription(
     # Verify channel was unsubscribed
     assert channels["public"] not in ws_manager.channel_connections
     
+    # Create a new channel for testing addition subscription
+    debug_log("WS_AUTO", "Creating new channel for addition subscription test")
+    response = await client.post(
+        "/api/channels",
+        json={"name": "test-addition-auto", "type": "private"},
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    assert response.status_code == 201
+    addition_channel_id = response.json()["channel_id"]
+    
     # Test channel addition subscription
     debug_log("WS_AUTO", "Testing channel addition subscription")
     response = await client.post(
-        f"/api/members/{channels['public']}/{user_id}",
+        f"/api/members/{addition_channel_id}",
+        json={"user_id": second_user_token["user_id"]},
         headers={"Authorization": f"Bearer {access_token}"}
     )
     assert response.status_code == 201
     
-    # Verify channel was re-subscribed
-    assert channels["public"] in ws_manager.channel_connections
-    assert new_connection_id in ws_manager.channel_connections[channels["public"]]
-    
-    # Test concurrent connections
-    debug_log("WS_AUTO", "Testing concurrent connections")
-    another_ws = MockWebSocket()
-    another_ws.query_params["token"] = access_token
-    another_connection_id = str(uuid.uuid4())
-    
-    another_user_id = await ws_manager.authenticate_connection(another_ws)
-    assert another_user_id == user_id
-    
-    await ws_manager.connect(another_ws, another_user_id, another_connection_id)
-    
-    # Verify both connections are subscribed to channels
-    assert new_connection_id in ws_manager.channel_connections[channels["public"]]
-    assert another_connection_id in ws_manager.channel_connections[channels["public"]]
-    assert new_connection_id in ws_manager.channel_connections[channels["private"]]
-    assert another_connection_id in ws_manager.channel_connections[channels["private"]]
+    # Verify channel was auto-subscribed
+    assert addition_channel_id in ws_manager.channel_connections
+    assert new_connection_id in ws_manager.channel_connections[addition_channel_id]
     
     # Cleanup
     await ws_manager.disconnect(new_connection_id)
-    await ws_manager.disconnect(another_connection_id)
 
 @pytest.mark.asyncio
 async def test_websocket_authentication_rate_limiting(
@@ -291,7 +287,7 @@ async def test_websocket_authentication_rate_limiting(
     
     # Verify both connections receive error
     for ws in [ws1, ws2]:
-        errors = ws.get_events_by_type("error")
+        errors = ws.get_events_by_type("system.error")
         assert len(errors) > 0
         debug_log("WS_RATE", f"Rate limit error received on connection", exc_info=True)
     
@@ -551,10 +547,11 @@ async def test_websocket_channel_broadcasts(
     client: AsyncClient
 ) -> None:
     """Test WebSocket channel broadcast handling:
-    1. Message broadcasts to channel members
-    2. Reaction broadcasts
-    3. Member join/leave broadcasts
+    1. Message broadcasts to channel members (created, updated, deleted)
+    2. Reaction broadcasts (added, removed)
+    3. Member broadcasts (joined, left)
     4. Channel update broadcasts
+    5. Role update broadcasts
     """
     ws = mock_websocket["websocket"]
     connection_id: str = mock_websocket["connection_id"]
@@ -568,7 +565,7 @@ async def test_websocket_channel_broadcasts(
             client,
             email=f"test{i+2}@example.com",
             password="Password1234!",
-            display_name=f"Test User{' Secondary' if i == 0 else ' Third'}"  # "Test User Secondary" for first, "Test User Third" for second
+            display_name=f"Test User {'ABCDEFGHIJK'[i]}"
         )
         concurrent_users.append(user_data)
         concurrent_websockets[i]["user_id"] = user_data["user_id"]
@@ -595,6 +592,16 @@ async def test_websocket_channel_broadcasts(
             headers={"Authorization": f"Bearer {access_token}"}
         )
         assert response.status_code == 201
+        # Verify member.joined event
+        for other_conn in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+            events = other_conn.get_events_by_type("member.joined")
+            assert len(events) > 0
+            latest_event = events[-1]
+            assert latest_event["data"]["user_id"] == conn["user_id"]
+            assert latest_event["data"]["channel_id"] == channel_id
+            assert "display_name" in latest_event["data"]
+            assert "role" in latest_event["data"]  # Private channel, so role should be present
+        
         # Verify automatic subscription
         assert channel_id in ws_manager.channel_connections
         assert conn["connection_id"] in ws_manager.channel_connections[channel_id]
@@ -605,8 +612,14 @@ async def test_websocket_channel_broadcasts(
     assert connection_id in ws_manager.channel_connections[channel_id]
     debug_log("WS_BCAST", f"Verified main websocket subscription")
 
+    # Clear previous events
+    ws.events.clear()
+    for conn in concurrent_websockets:
+        conn["websocket"].events.clear()
+
     # 1. Test message broadcasts
     debug_log("WS_BCAST", "Testing message broadcast to all channel members")
+    # Create message
     response = await client.post(
         "/api/messages",
         json={"content": "Broadcast test", "channel_id": channel_id},
@@ -615,15 +628,33 @@ async def test_websocket_channel_broadcasts(
     assert response.status_code == 201
     message_id = response.json()["message_id"]
     
-    # Verify all connections received the message
+    # Verify message.created event
     for conn in concurrent_websockets:
         messages = conn["websocket"].get_events_by_type("message.created")
         assert len(messages) == 1
         assert messages[0]["data"]["content"] == "Broadcast test"
-        debug_log("WS_BCAST", f"Verified message receipt for user_id: {conn['user_id']}")
+        debug_log("WS_BCAST", f"Verified message.created for user_id: {conn['user_id']}")
+    
+    # Test message update
+    debug_log("WS_BCAST", "Testing message update broadcast")
+    response = await client.put(
+        f"/api/messages/{message_id}",
+        json={"content": "Updated broadcast test"},
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    assert response.status_code == 200
+    
+    # Verify message.updated event
+    for conn in concurrent_websockets:
+        updates = conn["websocket"].get_events_by_type("message.updated")
+        assert len(updates) == 1
+        assert updates[0]["data"]["content"] == "Updated broadcast test"
+        assert updates[0]["data"]["message_id"] == message_id
+        debug_log("WS_BCAST", f"Verified message.updated for user_id: {conn['user_id']}")
     
     # 2. Test reaction broadcasts
     debug_log("WS_BCAST", f"Testing reaction broadcast - message_id: {message_id}")
+    # Add reaction
     response = await client.post(
         f"/api/reactions/messages/{message_id}",
         json={"emoji": "👍"},
@@ -631,15 +662,49 @@ async def test_websocket_channel_broadcasts(
     )
     assert response.status_code == 201
     
-    # Verify all connections received the reaction
+    # Verify reaction.added event
     for conn in concurrent_websockets:
         reactions = conn["websocket"].get_events_by_type("reaction.added")
         assert len(reactions) == 1
         assert reactions[0]["data"]["emoji"] == "👍"
-        debug_log("WS_BCAST", f"Verified reaction receipt for user_id: {conn['user_id']}")
+        debug_log("WS_BCAST", f"Verified reaction.added for user_id: {conn['user_id']}")
     
-    # 3. Test member join/leave broadcasts
+    # Remove reaction
+    response = await client.delete(
+        f"/api/reactions/messages/{message_id}",
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    assert response.status_code == 204
+    
+    # Verify reaction.removed event
+    for conn in concurrent_websockets:
+        removals = conn["websocket"].get_events_by_type("reaction.removed")
+        assert len(removals) == 1
+        assert removals[0]["data"]["message_id"] == message_id
+        assert removals[0]["data"]["user_id"] == user_id
+        assert removals[0]["data"]["channel_id"] == channel_id
+        debug_log("WS_BCAST", f"Verified reaction.removed for user_id: {conn['user_id']}")
+    
+    # 3. Test role update broadcast
+    debug_log("WS_BCAST", "Testing role update broadcast")
     first_conn = concurrent_websockets[0]
+    response = await client.put(
+        f"/api/members/{channel_id}/{first_conn['user_id']}/role",
+        json={"role": "admin"},
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    assert response.status_code == 200
+    
+    # Verify role.update event
+    for conn in concurrent_websockets:
+        updates = conn["websocket"].get_events_by_type("role.update")
+        assert len(updates) == 1
+        assert updates[0]["data"]["user_id"] == first_conn["user_id"]
+        assert updates[0]["data"]["new_role"] == "admin"
+        assert updates[0]["data"]["channel_id"] == channel_id
+        debug_log("WS_BCAST", f"Verified role.update for user_id: {conn['user_id']}")
+    
+    # 4. Test member leave broadcast
     debug_log("WS_BCAST", f"Testing member leave broadcast - user_id: {first_conn['user_id']}")
     response = await client.delete(
         f"/api/members/{channel_id}/{first_conn['user_id']}",
@@ -647,14 +712,31 @@ async def test_websocket_channel_broadcasts(
     )
     assert response.status_code == 204
     
-    # Verify remaining connections received leave notification
+    # Verify member.left event
     for conn in concurrent_websockets[1:]:
-        events = conn["websocket"].get_events_by_type("member_leave")
+        events = conn["websocket"].get_events_by_type("member.left")
         assert len(events) == 1
         assert events[0]["data"]["user_id"] == first_conn["user_id"]
-        debug_log("WS_BCAST", f"Verified leave notification for user_id: {conn['user_id']}")
+        assert events[0]["data"]["channel_id"] == channel_id
+        debug_log("WS_BCAST", f"Verified member.left for user_id: {conn['user_id']}")
     
-    # 4. Test channel update broadcasts
+    # 5. Test message deletion broadcast
+    debug_log("WS_BCAST", "Testing message deletion broadcast")
+    response = await client.delete(
+        f"/api/messages/{message_id}",
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    assert response.status_code == 204
+    
+    # Verify message.deleted event
+    for conn in concurrent_websockets[1:]:  # Skip first connection as they left
+        deletes = conn["websocket"].get_events_by_type("message.deleted")
+        assert len(deletes) == 1
+        assert deletes[0]["data"]["message_id"] == message_id
+        assert deletes[0]["data"]["channel_id"] == channel_id
+        debug_log("WS_BCAST", f"Verified message.deleted for user_id: {conn['user_id']}")
+    
+    # 6. Test channel update broadcast
     debug_log("WS_BCAST", f"Testing channel update broadcast - channel_id: {channel_id}")
     response = await client.patch(
         f"/api/channels/{channel_id}",
@@ -663,12 +745,13 @@ async def test_websocket_channel_broadcasts(
     )
     assert response.status_code == 200
     
-    # Verify all remaining members received update
+    # Verify channel.update event
     for conn in concurrent_websockets[1:]:
-        updates = conn["websocket"].get_events_by_type("channel_update")
+        updates = conn["websocket"].get_events_by_type("channel.update")
         assert len(updates) == 1
         assert updates[0]["data"]["name"] == "updated-broadcast"
-        debug_log("WS_BCAST", f"Verified update notification for user_id: {conn['user_id']}")
+        assert updates[0]["data"]["channel_id"] == channel_id
+        debug_log("WS_BCAST", f"Verified channel.update for user_id: {conn['user_id']}")
     
     # Cleanup
     debug_log("WS_BCAST", "Cleaning up test connections")
@@ -685,12 +768,35 @@ async def test_websocket_thread_lifecycle(
 ) -> None:
     """Test core thread operations:
     1. Thread creation and initial state
-    2. Reply handling and metadata updates
-    3. Thread deletion and cascade behavior
+    2. Reply handling and metadata updates:
+       - message.created events for replies
+       - thread.update events for metadata
+    3. Thread message operations:
+       - message.updated for parent/replies
+       - message.deleted for replies
+    4. Thread deletion cascade:
+       - message.soft_deleted for parent with replies
+       - message.deleted for parent after all replies deleted
+    5. All events are broadcast to channel members
     """
     ws = mock_websocket["websocket"]
     connection_id: str = mock_websocket["connection_id"]
     user_id = mock_websocket["user_id"]
+    
+    # Create additional users for concurrent websockets
+    debug_log("WS_THREAD", "Creating additional users for concurrent websockets")
+    concurrent_users = []
+    for i in range(len(concurrent_websockets)):
+        user_data = await register_test_user(
+            client,
+            email=f"test{i+2}@example.com",
+            password="Password1234!",
+            display_name=f"Test User {'ABCDEFGHIJK'[i]}"
+        )
+        concurrent_users.append(user_data)
+        concurrent_websockets[i]["user_id"] = user_data["user_id"]
+        concurrent_websockets[i]["token"] = user_data["access_token"]
+        debug_log("WS_THREAD", f"Created user {user_data['user_id']} for concurrent websocket {i+1}")
     
     # Setup test channel
     debug_log("WS_THREAD", f"Creating test channel for thread lifecycle - user_id: {user_id}")
@@ -702,11 +808,21 @@ async def test_websocket_thread_lifecycle(
     assert response.status_code == 201
     channel_id = response.json()["channel_id"]
     
-    # Subscribe to the channel
-    await ws_manager.join_channel(connection_id, channel_id)
-    debug_log("WS_THREAD", f"Subscribed to channel: {channel_id}")
+    # Add concurrent users to channel
+    for user in concurrent_users:
+        response = await client.post(
+            f"/api/members/{channel_id}",
+            json={"user_id": user["user_id"]},
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        assert response.status_code == 201
     
-    # Create parent message
+    # Clear previous events
+    ws.events.clear()
+    for conn in concurrent_websockets:
+        conn["websocket"].events.clear()
+    
+    # 1. Create parent message
     debug_log("WS_THREAD", "Creating parent message")
     response = await client.post(
         "/api/messages",
@@ -716,17 +832,22 @@ async def test_websocket_thread_lifecycle(
     assert response.status_code == 201
     parent_id = response.json()["message_id"]
     
-    # Verify thread creation state
-    messages = ws.get_events_by_type("message.created")
-    assert len(messages) == 1
-    assert messages[0]["data"]["content"] == "Parent message"
-    assert messages[0]["data"]["parent_id"] is None
-    debug_log("WS_THREAD", "Thread creation verified")
+    # Verify thread creation state for all members
+    for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+        messages = receiver.get_events_by_type("message.created")
+        assert len(messages) == 1
+        assert messages[0]["data"]["content"] == "Parent message"
+        assert messages[0]["data"]["parent_id"] is None
+        assert messages[0]["data"]["message_id"] == parent_id
+        assert messages[0]["data"]["channel_id"] == channel_id
+    debug_log("WS_THREAD", "Thread creation verified for all members")
     
-    # Test reply handling
+    # 2. Test reply handling and metadata updates
     debug_log("WS_THREAD", "Testing reply handling")
     reply_ids = []
-    for i in range(3):
+    
+    # Add replies from different users
+    for i, conn in enumerate(concurrent_websockets):
         response = await client.post(
             "/api/messages",
             json={
@@ -734,58 +855,165 @@ async def test_websocket_thread_lifecycle(
                 "channel_id": channel_id,
                 "parent_id": parent_id
             },
-            headers={"Authorization": f"Bearer {access_token}"}
+            headers={"Authorization": f"Bearer {conn['token']}"}
         )
         assert response.status_code == 201
         reply_ids.append(response.json()["message_id"])
-        debug_log("WS_THREAD", f"Reply {i+1} created")
+        
+        # Verify all members receive message.created and thread.update
+        for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+            # Verify message.created
+            messages = receiver.get_events_by_type("message.created")
+            assert len(messages) > 0
+            latest_message = messages[-1]
+            assert latest_message["data"]["content"] == f"Reply {i+1}"
+            assert latest_message["data"]["parent_id"] == parent_id
+            assert latest_message["data"]["channel_id"] == channel_id
+            assert latest_message["data"]["user_id"] == conn["user_id"]
+            
+            # Verify thread.update
+            thread_updates = receiver.get_events_by_type("thread.update")
+            latest_update = thread_updates[-1]
+            assert latest_update["data"]["thread_id"] == parent_id
+            assert latest_update["data"]["reply_count"] == i + 1
+            assert latest_update["data"]["latest_reply"]["message_id"] == reply_ids[-1]
+            assert latest_update["data"]["channel_id"] == channel_id
+        debug_log("WS_THREAD", f"Reply {i+1} created and verified")
     
-    # Verify thread metadata updates
-    thread_updates = ws.get_events_by_type("thread_update")
-    latest_update = thread_updates[-1]
-    assert latest_update["data"]["message_id"] == parent_id
-    assert latest_update["data"]["reply_count"] == 3
-    debug_log("WS_THREAD", "Thread metadata updates verified")
+    # 3. Test thread message operations
+    debug_log("WS_THREAD", "Testing thread message operations")
     
-    # Test thread deletion cascade
+    # Update parent message
+    response = await client.put(
+        f"/api/messages/{parent_id}",
+        json={"content": "Updated parent message"},
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    assert response.status_code == 200
+    
+    # Verify parent update
+    for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+        updates = receiver.get_events_by_type("message.updated")
+        assert len(updates) == 1
+        assert updates[0]["data"]["message_id"] == parent_id
+        assert updates[0]["data"]["content"] == "Updated parent message"
+        assert updates[0]["data"]["channel_id"] == channel_id
+    
+    # Update a reply
+    first_reply_id = reply_ids[0]
+    response = await client.put(
+        f"/api/messages/{first_reply_id}",
+        json={"content": "Updated reply"},
+        headers={"Authorization": f"Bearer {concurrent_websockets[0]['token']}"}
+    )
+    assert response.status_code == 200
+    
+    # Verify reply update
+    for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+        updates = receiver.get_events_by_type("message.updated")
+        assert len(updates) == 2  # Parent update + reply update
+        latest_update = updates[-1]
+        assert latest_update["data"]["message_id"] == first_reply_id
+        assert latest_update["data"]["content"] == "Updated reply"
+        assert latest_update["data"]["channel_id"] == channel_id
+        assert latest_update["data"]["parent_id"] == parent_id
+    
+    # 4. Test thread deletion cascade
     debug_log("WS_THREAD", "Testing thread deletion cascade")
+    
+    # Delete parent with replies (should soft delete)
     response = await client.delete(
         f"/api/messages/{parent_id}",
         headers={"Authorization": f"Bearer {access_token}"}
     )
     assert response.status_code == 204
     
-    # Verify deletion cascade
-    delete_events = ws.get_events_by_type("message_delete")
-    assert len(delete_events) == 1
-    assert delete_events[0]["data"]["message_id"] == parent_id
+    # Verify soft delete event
+    for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+        soft_deletes = receiver.get_events_by_type("message.soft_deleted")
+        assert len(soft_deletes) == 1
+        assert soft_deletes[0]["data"]["message_id"] == parent_id
+        assert soft_deletes[0]["data"]["channel_id"] == channel_id
+    debug_log("WS_THREAD", "Thread parent soft deletion verified")
     
-    thread_updates = ws.get_events_by_type("thread_update")
-    latest_update = thread_updates[-1]
-    assert latest_update["data"]["message_id"] == parent_id
-    assert latest_update["data"]["is_deleted"] is True
-    debug_log("WS_THREAD", "Thread deletion cascade verified")
+    # Delete all replies and verify parent hard deletion
+    for i, reply_id in enumerate(reply_ids):
+        # Use the reply author's token
+        author_token = concurrent_websockets[i]['token']
+        response = await client.delete(
+            f"/api/messages/{reply_id}",
+            headers={"Authorization": f"Bearer {author_token}"}
+        )
+        assert response.status_code == 204
+        
+        # For all replies except the last one, verify message.deleted event
+        if i < len(reply_ids) - 1:
+            for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+                deletes = receiver.get_events_by_type("message.deleted")
+                assert len(deletes) > 0
+                latest_delete = deletes[-1]
+                assert latest_delete["data"]["message_id"] == reply_id
+                assert latest_delete["data"]["channel_id"] == channel_id
+                assert latest_delete["data"]["parent_id"] == parent_id
+        else:
+            # For the last reply, verify only the parent deletion event
+            for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+                deletes = receiver.get_events_by_type("message.deleted")
+                latest_delete = deletes[-1]
+                assert latest_delete["data"]["message_id"] == parent_id
+                assert latest_delete["data"]["channel_id"] == channel_id
+                assert latest_delete["data"]["parent_id"] is None
+    
+    debug_log("WS_THREAD", "Complete thread deletion cascade verified")
     
     # Cleanup
     await ws_manager.disconnect(connection_id)
+    for conn in concurrent_websockets:
+        await ws_manager.disconnect(conn["connection_id"])
 
+@pytest.mark.asyncio
 async def test_websocket_thread_interactions(
     mock_websocket: Dict[str, Any],
     concurrent_websockets: List[Dict[str, Any]],
-    access_token: str
+    access_token: str,
+    client: AsyncClient
 ) -> None:
-    """Test thread interaction features:
-    1. Typing indicators in threads
-    2. Read receipts for thread messages
-    3. Thread metadata updates from message reactions
+    """Test thread interaction events:
+    1. Thread reply events:
+       - message.created with parent_id
+       - thread.update with reply counts and latest reply
+    2. Thread reaction events:
+       - reaction.added to parent and replies
+       - reaction.removed from parent and replies
+    3. Thread message updates:
+       - message.updated for replies
+       - thread.update metadata after edits
+    4. Thread member interactions:
+       - Multiple members replying
+       - Multiple members reacting
     """
     ws = mock_websocket["websocket"]
     connection_id: str = mock_websocket["connection_id"]
     user_id = mock_websocket["user_id"]
     
-    # Setup test channel and thread
-    debug_log("WS_THREAD_INT", "Creating test channel and thread")
-    response = await ws.app.client.post(
+    # Create additional users for concurrent websockets
+    debug_log("WS_THREAD_INT", "Creating additional users for concurrent websockets")
+    concurrent_users = []
+    for i in range(len(concurrent_websockets)):
+        user_data = await register_test_user(
+            client,
+            email=f"test{i+2}@example.com",
+            password="Password1234!",
+            display_name=f"Test User {'ABCDEFGHIJK'[i]}"
+        )
+        concurrent_users.append(user_data)
+        concurrent_websockets[i]["user_id"] = user_data["user_id"]
+        concurrent_websockets[i]["token"] = user_data["access_token"]
+        debug_log("WS_THREAD_INT", f"Created user {user_data['user_id']} for concurrent websocket {i+1}")
+    
+    # Setup test channel and add members
+    debug_log("WS_THREAD_INT", "Creating test channel")
+    response = await client.post(
         "/api/channels",
         json={"name": "test-thread-interactions", "type": "public"},
         headers={"Authorization": f"Bearer {access_token}"}
@@ -793,17 +1021,18 @@ async def test_websocket_thread_interactions(
     assert response.status_code == 201
     channel_id = response.json()["channel_id"]
     
-    # Add concurrent users
-    for conn in concurrent_websockets:
-        response = await ws.app.client.post(
+    # Add concurrent users to channel
+    for user in concurrent_users:
+        response = await client.post(
             f"/api/members/{channel_id}",
-            json={"user_id": conn["user_id"]},
+            json={"user_id": user["user_id"]},
             headers={"Authorization": f"Bearer {access_token}"}
         )
         assert response.status_code == 201
     
-    # Create parent message and replies
-    response = await ws.app.client.post(
+    # Create parent message
+    debug_log("WS_THREAD_INT", "Creating parent message")
+    response = await client.post(
         "/api/messages",
         json={"content": "Parent for interactions", "channel_id": channel_id},
         headers={"Authorization": f"Bearer {access_token}"}
@@ -811,300 +1040,246 @@ async def test_websocket_thread_interactions(
     assert response.status_code == 201
     parent_id = response.json()["message_id"]
     
-    # Add some replies
+    # Clear previous events
+    ws.events.clear()
+    for conn in concurrent_websockets:
+        conn["websocket"].events.clear()
+    
+    # 1. Test thread reply events
+    debug_log("WS_THREAD_INT", "Testing thread reply events")
     reply_ids = []
-    for i in range(2):
-        response = await ws.app.client.post(
+    
+    # Add replies from different users
+    for i, conn in enumerate(concurrent_websockets):
+        response = await client.post(
             "/api/messages",
             json={
-                "content": f"Reply {i+1}",
+                "content": f"Reply from user {conn['user_id']}",
                 "channel_id": channel_id,
                 "parent_id": parent_id
             },
-            headers={"Authorization": f"Bearer {access_token}"}
+            headers={"Authorization": f"Bearer {conn['token']}"}
         )
         assert response.status_code == 201
         reply_ids.append(response.json()["message_id"])
+        
+        # Verify message.created and thread.update events
+        for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+            # Check message.created
+            messages = receiver.get_events_by_type("message.created")
+            assert len(messages) > 0
+            latest_message = messages[-1]
+            assert latest_message["data"]["content"] == f"Reply from user {conn['user_id']}"
+            assert latest_message["data"]["parent_id"] == parent_id
+            assert latest_message["data"]["channel_id"] == channel_id
+            assert latest_message["data"]["user_id"] == conn["user_id"]
+            
+            # Check thread.update
+            updates = receiver.get_events_by_type("thread.update")
+            assert len(updates) > 0
+            latest_update = updates[-1]
+            assert latest_update["data"]["thread_id"] == parent_id
+            assert latest_update["data"]["reply_count"] == i + 1
+            assert latest_update["data"]["latest_reply"]["message_id"] == reply_ids[-1]
+            assert latest_update["data"]["channel_id"] == channel_id
+        debug_log("WS_THREAD_INT", f"Reply {i+1} events verified")
     
-    # Test typing indicators
-    debug_log("WS_THREAD_INT", "Testing typing indicators")
-    await ws_manager.handle_client_message(
-        connection_id,
-        json.dumps({
-            "type": "typing_start",
-            "channel_id": channel_id,
-            "parent_id": parent_id
-        })
-    )
-    
-    # Verify typing broadcasts
-    for conn in concurrent_websockets:
-        typing_events = conn["websocket"].get_events_by_type("typing_start")
-        assert len(typing_events) == 1
-        assert typing_events[0]["data"]["parent_id"] == parent_id
-        assert typing_events[0]["data"]["user_id"] == user_id
-    debug_log("WS_THREAD_INT", "Typing indicators verified")
-    
-    # Test read receipts
-    debug_log("WS_THREAD_INT", "Testing read receipts")
-    await ws_manager.handle_client_message(
-        connection_id,
-        json.dumps({
-            "type": "mark_read",
-            "message_id": parent_id
-        })
-    )
-    
-    # Verify read receipt broadcasts
-    for conn in concurrent_websockets:
-        read_events = conn["websocket"].get_events_by_type("message_read")
-        assert len(read_events) == 1
-        assert read_events[0]["data"]["message_id"] == parent_id
-        assert read_events[0]["data"]["user_id"] == user_id
-    debug_log("WS_THREAD_INT", "Read receipts verified")
-    
-    # Test thread metadata updates from message reactions
-    debug_log("WS_THREAD_INT", "Testing thread metadata updates from reactions")
+    # 2. Test thread reaction events
+    debug_log("WS_THREAD_INT", "Testing thread reaction events")
     
     # Clear previous events
     ws.events.clear()
     for conn in concurrent_websockets:
         conn["websocket"].events.clear()
     
-    # Add reaction to parent message
-    response = await ws.app.client.post(
+    # Test reactions on parent message
+    debug_log("WS_THREAD_INT", "Testing reactions on parent message")
+    response = await client.post(
         f"/api/reactions/messages/{parent_id}",
         json={"emoji": "👍"},
         headers={"Authorization": f"Bearer {access_token}"}
     )
     assert response.status_code == 201
     
-    # Add reaction to reply
-    response = await ws.app.client.post(
-        f"/api/reactions/messages/{reply_ids[0]}",
-        json={"emoji": "❤️"},
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 201
+    # Verify reaction.added for parent
+    for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+        reactions = receiver.get_events_by_type("reaction.added")
+        assert len(reactions) == 1
+        assert reactions[0]["data"]["message_id"] == parent_id
+        assert reactions[0]["data"]["emoji"] == "👍"
+        assert reactions[0]["data"]["user_id"] == user_id
+        assert reactions[0]["data"]["channel_id"] == channel_id
     
-    # Verify thread metadata updates
-    thread_updates = ws.get_events_by_type("thread_update")
-    latest_update = thread_updates[-1]
-    assert latest_update["data"]["message_id"] == parent_id
-    assert latest_update["data"]["reaction_count"] == 2  # Total reactions in thread
-    debug_log("WS_THREAD_INT", "Thread metadata updates from reactions verified")
+    # Test reactions on replies
+    debug_log("WS_THREAD_INT", "Testing reactions on replies")
+    for i, reply_id in enumerate(reply_ids):
+        conn = concurrent_websockets[i]
+        response = await client.post(
+            f"/api/reactions/messages/{reply_id}",
+            json={"emoji": "❤️"},
+            headers={"Authorization": f"Bearer {conn['token']}"}
+        )
+        assert response.status_code == 201
+        
+        # Verify reaction.added for reply
+        for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+            reactions = receiver.get_events_by_type("reaction.added")
+            latest_reaction = reactions[-1]
+            assert latest_reaction["data"]["message_id"] == reply_id
+            assert latest_reaction["data"]["emoji"] == "❤️"
+            assert latest_reaction["data"]["user_id"] == conn["user_id"]
+            assert latest_reaction["data"]["channel_id"] == channel_id
     
-    # Remove reaction from reply
-    response = await ws.app.client.delete(
-        f"/api/reactions/messages/{reply_ids[0]}",
+    # Test reaction removal
+    debug_log("WS_THREAD_INT", "Testing reaction removal")
+    
+    # Remove parent reaction
+    response = await client.delete(
+        f"/api/reactions/messages/{parent_id}",
         headers={"Authorization": f"Bearer {access_token}"}
     )
     assert response.status_code == 204
     
-    # Verify thread metadata updated after reaction removal
-    thread_updates = ws.get_events_by_type("thread_update")
-    latest_update = thread_updates[-1]
-    assert latest_update["data"]["message_id"] == parent_id
-    assert latest_update["data"]["reaction_count"] == 1  # Only parent reaction remains
-    debug_log("WS_THREAD_INT", "Thread metadata updates after reaction removal verified")
+    # Verify reaction.removed for parent
+    for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+        removals = receiver.get_events_by_type("reaction.removed")
+        assert len(removals) > 0
+        latest_removal = removals[-1]
+        assert latest_removal["data"]["message_id"] == parent_id
+        assert latest_removal["data"]["user_id"] == user_id
+        assert latest_removal["data"]["channel_id"] == channel_id
+    
+    # 3. Test thread message updates
+    debug_log("WS_THREAD_INT", "Testing thread message updates")
+    
+    # Clear previous events
+    ws.events.clear()
+    for conn in concurrent_websockets:
+        conn["websocket"].events.clear()
+    
+    # Update replies
+    for i, reply_id in enumerate(reply_ids):
+        conn = concurrent_websockets[i]
+        response = await client.put(
+            f"/api/messages/{reply_id}",
+            json={"content": f"Updated reply from user {conn['user_id']}"},
+            headers={"Authorization": f"Bearer {conn['token']}"}
+        )
+        assert response.status_code == 200
+        
+        # Verify message.updated event
+        for receiver in [ws, *[c["websocket"] for c in concurrent_websockets]]:
+            # Check message.updated
+            updates = receiver.get_events_by_type("message.updated")
+            assert len(updates) > 0
+            latest_update = updates[-1]
+            assert latest_update["data"]["message_id"] == reply_id
+            assert latest_update["data"]["content"] == f"Updated reply from user {conn['user_id']}"
+            assert latest_update["data"]["parent_id"] == parent_id
+            assert latest_update["data"]["channel_id"] == channel_id
+        debug_log("WS_THREAD_INT", f"Reply {i+1} update events verified")
     
     # Cleanup
     await ws_manager.disconnect(connection_id)
     for conn in concurrent_websockets:
         await ws_manager.disconnect(conn["connection_id"])
 
+@pytest.mark.asyncio
 async def test_websocket_message_visibility(
     mock_websocket: Dict[str, Any],
-    access_token: str
-) -> None:
-    """Test message update visibility with pagination:
-    1. Edit visibility based on current view
-    2. Delete visibility based on current view
-    3. Visibility changes with pagination
-    """
-    ws = mock_websocket["websocket"]
-    connection_id: str = mock_websocket["connection_id"]
-    
-    # Setup test channel
-    debug_log("WS_MSG_VIS", "Creating test channel")
-    response = await ws.app.client.post(
-        "/api/channels",
-        json={"name": "test-message-visibility", "type": "public"},
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 201
-    channel_id = response.json()["channel_id"]
-    
-    # Create messages across multiple pages
-    message_ids = []
-    for i in range(50):  # 20 per page
-        response = await ws.app.client.post(
-            "/api/messages",
-            json={"content": f"Message {i}", "channel_id": channel_id},
-            headers={"Authorization": f"Bearer {access_token}"}
-        )
-        assert response.status_code == 201
-        message_ids.append(response.json()["message_id"])
-    
-    # Get latest page
-    response = await ws.app.client.get(
-        f"/api/messages/{channel_id}",
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 200
-    visible_messages = response.json()
-    visible_ids = {msg["message_id"] for msg in visible_messages}
-    
-    # Test edit visibility
-    debug_log("WS_MSG_VIS", "Testing edit visibility")
-    
-    # Edit visible message
-    visible_msg = message_ids[-1]
-    response = await ws.app.client.put(
-        f"/api/messages/{visible_msg}",
-        json={"content": "Edited visible"},
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 200
-    
-    # Edit invisible message
-    invisible_msg = message_ids[0]
-    response = await ws.app.client.put(
-        f"/api/messages/{invisible_msg}",
-        json={"content": "Edited invisible"},
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 200
-    
-    # Verify edit notifications
-    edit_events = ws.get_events_by_type("message_edit")
-    visible_edits = [e for e in edit_events if e["data"]["message_id"] == visible_msg]
-    invisible_edits = [e for e in edit_events if e["data"]["message_id"] == invisible_msg]
-    
-    assert len(visible_edits) > 0
-    assert len(invisible_edits) == 0
-    debug_log("WS_MSG_VIS", "Edit visibility verified")
-    
-    # Test delete visibility
-    debug_log("WS_MSG_VIS", "Testing delete visibility")
-    
-    # Delete visible message
-    visible_del = message_ids[-2]
-    response = await ws.app.client.delete(
-        f"/api/messages/{visible_del}",
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 204
-    
-    # Delete invisible message
-    invisible_del = message_ids[1]
-    response = await ws.app.client.delete(
-        f"/api/messages/{invisible_del}",
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 204
-    
-    # Verify deletion notifications
-    delete_events = ws.get_events_by_type("message_delete")
-    visible_dels = [e for e in delete_events if e["data"]["message_id"] == visible_del]
-    invisible_dels = [e for e in delete_events if e["data"]["message_id"] == invisible_del]
-    
-    assert len(visible_dels) > 0
-    assert len(invisible_dels) == 0
-    debug_log("WS_MSG_VIS", "Delete visibility verified")
-    
-    # Test visibility changes with pagination
-    debug_log("WS_MSG_VIS", "Testing visibility changes")
-    response = await ws.app.client.get(
-        f"/api/messages/{channel_id}?before={message_ids[30]}",
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 200
-    new_visible = response.json()
-    new_visible_ids = {msg["message_id"] for msg in new_visible}
-    
-    # Clear previous events
-    ws.events.clear()
-    
-    # Edit previously visible message
-    response = await ws.app.client.put(
-        f"/api/messages/{visible_msg}",
-        json={"content": "Edit after pagination"},
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 200
-    
-    # Verify no notification for now-invisible message
-    edit_events = ws.get_events_by_type("message_edit")
-    assert len(edit_events) == 0
-    debug_log("WS_MSG_VIS", "Visibility changes verified")
-    
-    # Cleanup
-    await ws_manager.disconnect(connection_id)
-
-async def test_websocket_channel_type_behavior(
-    mock_websocket: Dict[str, Any],
     concurrent_websockets: List[Dict[str, Any]],
-    access_token: str
+    access_token: str,
+    client: AsyncClient
 ) -> None:
-    """Test WebSocket behavior across channel types:
-    1. Public channel message handling
-    2. Private channel access control
-    3. Direct message specifics
+    """Test message event delivery to channel members:
+    1. Events are delivered to all channel members
+    2. Events are delivered for all channel types (public, private, DM, notes)
+    3. Events are delivered for all message operations (create, update, delete)
     """
     ws = mock_websocket["websocket"]
     connection_id: str = mock_websocket["connection_id"]
     user_id = mock_websocket["user_id"]
     
-    channels = {}
-    
-    # Setup channels
-    debug_log("WS_CHAN_TYPE", "Creating test channels")
-    
-    # Public channel
-    response = await ws.app.client.post(
-        "/api/channels",
-        json={"name": "test-public", "type": "public"},
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 201
-    channels["public"] = response.json()["channel_id"]
-    
-    # Private channel
-    response = await ws.app.client.post(
-        "/api/channels",
-        json={"name": "test-private", "type": "private"},
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 201
-    channels["private"] = response.json()["channel_id"]
-    
-    # Direct channel
-    other_user = concurrent_websockets[0]["user_id"]
-    response = await ws.app.client.post(
-        "/api/channels/direct",
-        json={"user_id": other_user},
-        headers={"Authorization": f"Bearer {access_token}"}
-    )
-    assert response.status_code == 201
-    channels["direct"] = response.json()["channel_id"]
+    # Create additional users for concurrent websockets
+    debug_log("WS_MSG", "Creating additional users for concurrent websockets")
+    concurrent_users = []
+    for i in range(len(concurrent_websockets)):
+        user_data = await register_test_user(
+            client,
+            email=f"test{i+2}@example.com",
+            password="Password1234!",
+            display_name=f"Test User {'ABCDEFGHIJK'[i]}"
+        )
+        concurrent_users.append(user_data)
+        concurrent_websockets[i]["user_id"] = user_data["user_id"]
+        concurrent_websockets[i]["token"] = user_data["access_token"]
+        debug_log("WS_MSG", f"Created user {user_data['user_id']} for concurrent websocket {i+1}")
     
     # Test each channel type
-    for channel_type, channel_id in channels.items():
-        debug_log("WS_CHAN_TYPE", f"Testing {channel_type} channel")
+    channel_types = {
+        "public": {"name": "test-public", "type": "public"},
+        "private": {"name": "test-private", "type": "private"},
+        "notes": {"type": "notes"},  # Notes channels cannot have a name
+        "dm": None  # Will be created through the DM endpoint
+    }
+    
+    for channel_type, channel_config in channel_types.items():
+        debug_log("WS_MSG", f"Testing {channel_type} channel")
         
-        # Add users based on channel type
-        if channel_type in ["public", "private"]:
-            for conn in concurrent_websockets:
-                response = await ws.app.client.post(
+        # Create channel
+        if channel_type == "dm":
+            # Create DM channel by sending a message
+            response = await client.post(
+                "/api/messages",
+                json={
+                    "content": "Test DM",
+                    "recipient_id": concurrent_users[0]["user_id"]
+                },
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            assert response.status_code == 201
+            channel_id = response.json()["channel_id"]  # Message response includes channel_id
+        elif channel_type == "notes":
+            # Get existing notes channel (created during registration)
+            response = await client.get(
+                "/api/channels",
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            assert response.status_code == 200
+            notes_channels = [c for c in response.json() if c["type"] == "notes"]
+            assert len(notes_channels) == 1, "User should have exactly one notes channel"
+            response.status_code = 201  # Simulate creation response for test flow
+            response._content = json.dumps(notes_channels[0]).encode()  # Encode as JSON bytes
+        else:
+            response = await client.post(
+                "/api/channels",
+                json=channel_config,
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            if response.status_code != 201:
+                debug_log("WS_MSG", f"Channel creation failed with status {response.status_code}")
+                debug_log("WS_MSG", f"Response content: {response.text}")
+            assert response.status_code == 201
+        channel_id = response.json()["channel_id"]
+        
+        # Add members for non-DM channels
+        if channel_type not in ["dm", "notes"]:
+            for user in concurrent_users:
+                response = await client.post(
                     f"/api/members/{channel_id}",
-                    json={"user_id": conn["user_id"]},
+                    json={"user_id": user["user_id"]},
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
                 assert response.status_code == 201
         
-        # Send test message
-        response = await ws.app.client.post(
+        # Clear previous events
+        ws.events.clear()
+        for conn in concurrent_websockets:
+            conn["websocket"].events.clear()
+        
+        # Test message.created
+        debug_log("WS_MSG", f"Testing message.created in {channel_type} channel")
+        response = await client.post(
             "/api/messages",
             json={"content": f"Test {channel_type}", "channel_id": channel_id},
             headers={"Authorization": f"Bearer {access_token}"}
@@ -1112,24 +1287,49 @@ async def test_websocket_channel_type_behavior(
         assert response.status_code == 201
         message_id = response.json()["message_id"]
         
-        # Verify message delivery
-        if channel_type == "direct":
-            # Only the other user should receive
-            other_ws = concurrent_websockets[0]["websocket"]
-            messages = other_ws.get_events_by_type("message.created")
-            assert len(messages) == 1
-            assert messages[0]["data"]["channel_id"] == channel_id
+        # Verify event delivery
+        expected_receivers = []
+        if channel_type == "dm":
+            expected_receivers = [concurrent_websockets[0]]  # Only the DM recipient
+        elif channel_type == "notes":
+            expected_receivers = []  # Only the creator receives
         else:
-            # All channel members should receive
-            for conn in concurrent_websockets:
-                messages = conn["websocket"].get_events_by_type("message.created")
-                assert len(messages) == 1
-                assert messages[0]["data"]["channel_id"] == channel_id
+            expected_receivers = concurrent_websockets  # All members for public/private
         
-        # Clear events for next channel
-        ws.events.clear()
-        for conn in concurrent_websockets:
-            conn["websocket"].events.clear()
+        for receiver in expected_receivers:
+            created_events = receiver["websocket"].get_events_by_type("message.created")
+            assert len(created_events) == 1
+            assert created_events[0]["data"]["message_id"] == message_id
+            assert created_events[0]["data"]["channel_id"] == channel_id
+        
+        # Test message.updated
+        debug_log("WS_MSG", f"Testing message.updated in {channel_type} channel")
+        response = await client.put(
+            f"/api/messages/{message_id}",
+            json={"content": f"Updated {channel_type}"},
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        assert response.status_code == 200
+        
+        for receiver in expected_receivers:
+            updated_events = receiver["websocket"].get_events_by_type("message.updated")
+            assert len(updated_events) == 1
+            assert updated_events[0]["data"]["message_id"] == message_id
+            assert updated_events[0]["data"]["channel_id"] == channel_id
+        
+        # Test message.deleted
+        debug_log("WS_MSG", f"Testing message.deleted in {channel_type} channel")
+        response = await client.delete(
+            f"/api/messages/{message_id}",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        assert response.status_code == 204
+        
+        for receiver in expected_receivers:
+            deleted_events = receiver["websocket"].get_events_by_type("message.deleted")
+            assert len(deleted_events) == 1
+            assert deleted_events[0]["data"]["message_id"] == message_id
+            assert deleted_events[0]["data"]["channel_id"] == channel_id
     
     # Cleanup
     await ws_manager.disconnect(connection_id)

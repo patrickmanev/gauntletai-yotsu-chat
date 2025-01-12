@@ -99,6 +99,19 @@ class ChannelService:
             
             await db.commit()
             debug_log("CHANNEL", f"Created new DM channel {channel_id}")
+
+            # Initialize WebSocket channel
+            await ws_manager.initialize_channel(channel_id)
+            debug_log("CHANNEL", "├─ Initialized WebSocket channel")
+
+            # Subscribe both users' WebSocket connections to the new channel
+            for connection_id, websocket in ws_manager.active_connections.items():
+                user_id = ws_manager.connection_users.get(connection_id)
+                if user_id in [user1_id, user2_id]:
+                    debug_log("CHANNEL", f"├─ Subscribing user {user_id}'s connection {connection_id} to new DM channel {channel_id}")
+                    await ws_manager.join_channel(connection_id, channel_id)
+                    debug_log("CHANNEL", f"└─ Subscribed user {user_id}'s connection {connection_id}")
+            
             return channel_id, True
             
         except Exception as e:
@@ -498,7 +511,18 @@ class ChannelService:
                     await ws_manager.join_channel(connection_id, channel_id)
                     debug_log("CHANNEL", f"└─ Subscribed connection {connection_id} to channel {channel_id}")
             
-            return await self.get_member_info(db, channel_id, user_id)
+            # Get member info for broadcast
+            member_info = await self.get_member_info(db, channel_id, user_id)
+            
+            # Broadcast member.joined event
+            event = {
+                "type": "member.joined",
+                "data": member_info
+            }
+            await ws_manager.broadcast_to_channel(channel_id, event)
+            debug_log("CHANNEL", "Broadcasted member.joined event")
+            
+            return member_info
             
         except (HTTPException, YotsuError):
             raise
@@ -521,20 +545,31 @@ class ChannelService:
         - Private channels: 
             - Members can leave at any time
             - Other removals defer to role_service
+            
+        Channel Cleanup Behavior:
+        - When the last member is removed, the channel is automatically deleted by a database trigger
+        - In this case, we skip broadcasting the member.left event since there are no remaining members
+        - This prevents initializing websocket state for a deleted channel
         """
         debug_log("CHANNEL", f"Removing user {target_user_id} from channel {channel_id}")
         
         try:
-            # Get channel type
-            async with db.execute(
-                "SELECT type FROM channels WHERE channel_id = ?",
-                [channel_id]
-            ) as cursor:
+            # Get channel type and member count in one query
+            async with db.execute("""
+                SELECT c.type, (
+                    SELECT COUNT(*) 
+                    FROM channels_members cm 
+                    WHERE cm.channel_id = c.channel_id
+                ) as member_count
+                FROM channels c 
+                WHERE c.channel_id = ?
+            """, [channel_id]) as cursor:
                 result = await cursor.fetchone()
                 if not result:
                     raise ValueError("Channel not found")
                 
                 channel_type = result["type"]
+                is_last_member = result["member_count"] == 1  # 1 because target hasn't been removed yet
                 
             # Basic validation
             if channel_type in [ChannelType.NOTES, ChannelType.DM]:
@@ -563,16 +598,20 @@ class ChannelService:
                     await ws_manager.leave_channel(connection_id, channel_id)
                     debug_log("CHANNEL", f"└─ Unsubscribed connection {connection_id} from channel {channel_id}")
 
-            # Broadcast member leave event
-            event = {
-                "type": "member_leave",
-                "data": {
-                    "channel_id": channel_id,
-                    "user_id": target_user_id
+            # Only broadcast member.left if this wasn't the last member
+            # If it was the last member, the channel is already deleted by the DB trigger
+            if not is_last_member:
+                event = {
+                    "type": "member.left",
+                    "data": {
+                        "channel_id": channel_id,
+                        "user_id": target_user_id
+                    }
                 }
-            }
-            await ws_manager.broadcast_to_channel(channel_id, event)
-            debug_log("CHANNEL", "Broadcasted member_leave event")
+                await ws_manager.broadcast_to_channel(channel_id, event)
+                debug_log("CHANNEL", "Broadcasted member.left event")
+            else:
+                debug_log("CHANNEL", "Skipped member.left broadcast for last member (channel deleted)")
                 
         except Exception as e:
             logger.error(f"Failed to remove channel member: {str(e)}")
@@ -672,6 +711,7 @@ class ChannelService:
         async with db.execute(
             """
             SELECT 
+                cm.channel_id,
                 cm.user_id,
                 u.display_name,
                 CASE WHEN c.type = 'private' THEN cm.role ELSE NULL END as role,
@@ -773,7 +813,7 @@ class ChannelService:
             
             # Broadcast channel update event
             event = {
-                "type": "channel_update",
+                "type": "channel.update",
                 "data": {
                     "channel_id": channel_id,
                     "name": name

@@ -101,56 +101,41 @@ class ReactionService:
         self,
         db: aiosqlite.Connection,
         message_id: int,
-        emoji: str,
         user_id: int
-    ) -> Dict[str, str]:
+    ) -> None:
         """Remove a reaction from a message."""
-        debug_log("REACTION", f"Removing reaction {emoji} from message {message_id} by user {user_id}")
-        
-        # Get channel_id first
-        async with db.execute(
-            "SELECT channel_id FROM messages WHERE message_id = ?",
-            (message_id,)
-        ) as cursor:
-            message = await cursor.fetchone()
-            if not message:
-                debug_log("REACTION", f"Message {message_id} not found")
+        try:
+            # Get the channel_id for broadcasting
+            cursor = await db.execute(
+                """SELECT channel_id FROM messages WHERE message_id = ?""",
+                (message_id,)
+            )
+            result = await cursor.fetchone()
+            if not result:
                 raise ValueError("Message not found")
-            channel_id = message["channel_id"]
-            debug_log("REACTION", f"Message {message_id} belongs to channel {channel_id}")
-        
-        # Verify channel access
-        await message_service._verify_channel_access(db, channel_id, user_id)
-        
-        result = await db.execute(
-            """
-            DELETE FROM reactions
-            WHERE message_id = ? AND emoji = ? AND user_id = ?
-            """,
-            (message_id, emoji, user_id)
-        )
-        await db.commit()
-        
-        if result.rowcount == 0:
-            debug_log("REACTION", f"No reaction found for message {message_id}, emoji {emoji}, user {user_id}")
-            raise ValueError("Reaction not found")
-        
-        debug_log("REACTION", f"Removed reaction {emoji} from message {message_id} by user {user_id}")
-        
-        # Broadcast reaction removed to channel
-        event = {
-            "type": "reaction.removed",
-            "data": {
-                "message_id": message_id,
-                "channel_id": channel_id,
-                "user_id": user_id,
-                "emoji": emoji
+            channel_id = result[0]
+
+            # Delete the reaction
+            await db.execute(
+                """DELETE FROM reactions 
+                WHERE message_id = ? AND user_id = ?""",
+                (message_id, user_id)
+            )
+            await db.commit()
+
+            # Broadcast the reaction.removed event
+            event = {
+                "type": "reaction.removed",
+                "data": {
+                    "message_id": message_id,
+                    "user_id": user_id,
+                    "channel_id": channel_id
+                }
             }
-        }
-        await ws_manager.broadcast_to_channel(channel_id, event)
-        debug_log("REACTION", f"Broadcasted reaction.removed event for message {message_id}")
-        
-        return {"status": "success"}
+            await ws_manager.broadcast_to_channel(channel_id, event)
+        except ValueError as e:
+            debug_log("REACTION", f"Error removing reaction: {e}")
+            raise e
 
     async def list_reactions(
         self,

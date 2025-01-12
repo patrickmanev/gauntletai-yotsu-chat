@@ -79,7 +79,46 @@ class MessageService:
         # Initialize WebSocket channel if needed
         await ws_manager.initialize_channel(channel_id)
         
-        # Broadcast message creation
+        # If this is a reply, send thread update first
+        if parent_id:
+            # Get thread metadata
+            async with db.execute(
+                """
+                SELECT 
+                    COUNT(*) as reply_count,
+                    MAX(message_id) as latest_reply_id
+                FROM messages 
+                WHERE parent_id = ?
+                """,
+                (parent_id,)
+            ) as cursor:
+                thread_meta = await cursor.fetchone()
+
+            # Get latest reply details
+            latest_reply = await self.get_message(db, thread_meta["latest_reply_id"], user_id)
+
+            # Broadcast thread update first
+            await ws_manager.broadcast_to_channel(
+                channel_id,
+                {
+                    "type": "thread.update",
+                    "data": {
+                        "thread_id": parent_id,
+                        "channel_id": channel_id,
+                        "reply_count": thread_meta["reply_count"],
+                        "latest_reply": {
+                            "message_id": latest_reply["message_id"],
+                            "content": latest_reply["content"],
+                            "user_id": latest_reply["user_id"],
+                            "display_name": latest_reply["display_name"],
+                            "created_at": latest_reply["created_at"].isoformat()
+                        }
+                    }
+                }
+            )
+            debug_log("MSG", f"Sent thread.update for thread {parent_id} - clients should wait for message.created")
+        
+        # Then broadcast the message creation
         await ws_manager.broadcast_to_channel(
             channel_id,
             {
@@ -95,7 +134,10 @@ class MessageService:
             }
         )
         
-        debug_log("MSG", f"Created message {message_id}")
+        if parent_id:
+            debug_log("MSG", f"Sent message.created for reply {message_id} in thread {parent_id} - clients can now render both updates")
+        else:
+            debug_log("MSG", f"Created message {message_id}")
         return message_id
 
     async def get_message(
@@ -233,6 +275,7 @@ class MessageService:
                     "channel_id": updated_message["channel_id"],
                     "content": content,
                     "user_id": user_id,
+                    "parent_id": updated_message["parent_id"],
                     "updated_at": updated_message["updated_at"].isoformat()
                 }
             }
@@ -245,16 +288,35 @@ class MessageService:
         db: aiosqlite.Connection,
         message_id: int,
         user_id: int
-    ) -> Dict[str, str]:
+    ) -> None:
         """Delete a message with proper cascade handling for threads."""
-        debug_log("MSG", f"Deleting message {message_id}")
+        debug_log("MSG", f"Starting deletion of message {message_id} by user {user_id}")
         
         async with db.cursor() as cur:
             # Get message and verify permissions
             message = await self.get_message(db, message_id, user_id)
+            debug_log("MSG", f"Message details - channel: {message['channel_id']}, parent: {message['parent_id']}, author: {message['user_id']}")
             
             # Check if user is author or channel admin/owner
             if message["user_id"] != user_id:
+                debug_log("MSG", f"Non-author deletion attempt - checking permissions")
+                # Get channel type
+                async with db.execute(
+                    """
+                    SELECT type FROM channels
+                    WHERE channel_id = ?
+                    """,
+                    (message["channel_id"],)
+                ) as cursor:
+                    channel = await cursor.fetchone()
+                    debug_log("MSG", f"Channel type: {channel['type']}")
+                    
+                # For public channels, only the author can delete
+                if channel["type"] == "public":
+                    debug_log("MSG", "Rejecting deletion - public channel requires author")
+                    raise ValueError("In public channels, only the message author can delete their messages")
+                    
+                # For private channels, check if user is owner/admin
                 await cur.execute(
                     """
                     SELECT role FROM channels_members
@@ -264,10 +326,12 @@ class MessageService:
                 )
                 member = await cur.fetchone()
                 if not member or member["role"] not in ["owner", "admin"]:
+                    debug_log("MSG", f"Rejecting deletion - user role: {member['role'] if member else 'none'}")
                     raise ValueError("No permission to delete this message")
             
             # Handle thread parent deletion
             if message["parent_id"] is None:
+                debug_log("MSG", f"Processing parent message deletion - checking for replies")
                 await cur.execute(
                     """
                     SELECT EXISTS(
@@ -277,8 +341,10 @@ class MessageService:
                     (message_id,)
                 )
                 has_replies = (await cur.fetchone())["has_replies"]
+                debug_log("MSG", f"Parent message has replies: {has_replies}")
                 
                 if has_replies:
+                    debug_log("MSG", "Soft deleting parent message with replies")
                     # Soft delete thread parent
                     await cur.execute(
                         """
@@ -295,6 +361,7 @@ class MessageService:
                     )
                     await db.commit()
                     
+                    debug_log("MSG", f"Broadcasting soft delete event for parent {message_id}")
                     await ws_manager.broadcast_to_channel(
                         message["channel_id"],
                         {
@@ -305,33 +372,108 @@ class MessageService:
                             }
                         }
                     )
-                    return {"message": "Message marked as deleted"}
+                    return None
             
-            # Handle reply deletion and cleanup
-            if message["parent_id"]:
-                await self._handle_reply_deletion(db, cur, message)
-            
+            debug_log("MSG", f"Deleting message {message_id} attachments and reactions")
             # Delete message attachments and reactions
             await cur.execute("DELETE FROM reactions WHERE message_id = ?", (message_id,))
             await cur.execute("DELETE FROM attachments WHERE message_id = ?", (message_id,))
             
             # Delete the message
             await cur.execute("DELETE FROM messages WHERE message_id = ?", (message_id,))
+            
+            # For replies, check parent cleanup before committing
+            parent_to_delete = None
+            if message["parent_id"]:
+                debug_log("MSG", "Checking if parent needs cleanup before commit")
+                # Check if parent is soft-deleted and this is the last reply
+                await cur.execute(
+                    """
+                    SELECT content FROM messages 
+                    WHERE message_id = ? AND content = 'This message was deleted'
+                    """,
+                    (message["parent_id"],)
+                )
+                parent = await cur.fetchone()
+                
+                if parent:
+                    await cur.execute(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1 FROM messages 
+                            WHERE parent_id = ? AND message_id != ?
+                        ) as has_other_replies
+                        """,
+                        (message["parent_id"], message["message_id"])
+                    )
+                    has_other_replies = (await cur.fetchone())["has_other_replies"]
+                    
+                    if not has_other_replies:
+                        debug_log("MSG", f"No other replies - cleaning up parent {message['parent_id']}")
+                        # Clean up the parent in the same transaction
+                        await cur.execute(
+                            "DELETE FROM reactions WHERE message_id = ?",
+                            (message["parent_id"],)
+                        )
+                        await cur.execute(
+                            "DELETE FROM attachments WHERE message_id = ?",
+                            (message["parent_id"],)
+                        )
+                        await cur.execute(
+                            "DELETE FROM messages WHERE message_id = ?",
+                            (message["parent_id"],)
+                        )
+                        parent_to_delete = message["parent_id"]
+
+            # Commit all changes in a single transaction
             await db.commit()
+            debug_log("MSG", f"All database operations committed")
             
-            # Broadcast deletion
-            await ws_manager.broadcast_to_channel(
-                message["channel_id"],
-                {
-                    "type": "message.deleted",
-                    "data": {
-                        "message_id": message_id,
-                        "channel_id": message["channel_id"]
+            # Now broadcast events
+            if parent_to_delete:
+                # If we're deleting a thread (parent + last reply), only broadcast parent deletion
+                debug_log("MSG", f"Broadcasting deletion event for parent {parent_to_delete}")
+                await ws_manager.broadcast_to_channel(
+                    message["channel_id"],
+                    {
+                        "type": "message.deleted",
+                        "data": {
+                            "message_id": parent_to_delete,
+                            "channel_id": message["channel_id"],
+                            "parent_id": None
+                        }
                     }
-                }
-            )
+                )
+            elif not message["parent_id"]:
+                # If we're deleting a standalone message (not a reply), broadcast its deletion
+                debug_log("MSG", f"Broadcasting deletion event for standalone message {message_id}")
+                await ws_manager.broadcast_to_channel(
+                    message["channel_id"],
+                    {
+                        "type": "message.deleted",
+                        "data": {
+                            "message_id": message_id,
+                            "channel_id": message["channel_id"],
+                            "parent_id": message["parent_id"]
+                        }
+                    }
+                )
+            else:
+                # If we're deleting a reply (but not the last one), broadcast its deletion
+                debug_log("MSG", f"Broadcasting deletion event for reply {message_id}")
+                await ws_manager.broadcast_to_channel(
+                    message["channel_id"],
+                    {
+                        "type": "message.deleted",
+                        "data": {
+                            "message_id": message_id,
+                            "channel_id": message["channel_id"],
+                            "parent_id": message["parent_id"]
+                        }
+                    }
+                )
             
-            return {"message": "Message deleted successfully"}
+            return None
 
     async def _verify_channel_access(
         self,
@@ -377,6 +519,8 @@ class MessageService:
         message: Dict[str, Any]
     ) -> None:
         """Handle deletion of a reply, including parent cleanup if needed."""
+        debug_log("MSG", f"Checking parent {message['parent_id']} status after reply {message['message_id']} deletion")
+        
         # Check if parent is soft-deleted and this is the last reply
         await cur.execute(
             """
@@ -386,6 +530,7 @@ class MessageService:
             (message["parent_id"],)
         )
         parent = await cur.fetchone()
+        debug_log("MSG", f"Parent is soft-deleted: {parent is not None}")
         
         if parent:
             await cur.execute(
@@ -398,30 +543,10 @@ class MessageService:
                 (message["parent_id"], message["message_id"])
             )
             has_other_replies = (await cur.fetchone())["has_other_replies"]
+            debug_log("MSG", f"Parent has other replies: {has_other_replies}")
             
             if not has_other_replies:
-                # Clean up the entire thread
-                await cur.execute(
-                    """
-                    DELETE FROM reactions WHERE message_id IN (
-                        SELECT message_id FROM messages WHERE parent_id = ?
-                    )
-                    """,
-                    (message["parent_id"],)
-                )
-                await cur.execute(
-                    """
-                    DELETE FROM attachments WHERE message_id IN (
-                        SELECT message_id FROM messages WHERE parent_id = ?
-                    )
-                    """,
-                    (message["parent_id"],)
-                )
-                await cur.execute(
-                    "DELETE FROM messages WHERE parent_id = ?",
-                    (message["parent_id"],)
-                )
-                
+                debug_log("MSG", f"No other replies - cleaning up parent {message['parent_id']}")
                 # Clean up the parent
                 await cur.execute(
                     "DELETE FROM reactions WHERE message_id = ?",
@@ -434,6 +559,22 @@ class MessageService:
                 await cur.execute(
                     "DELETE FROM messages WHERE message_id = ?",
                     (message["parent_id"],)
+                )
+                await db.commit()
+                debug_log("MSG", f"Parent {message['parent_id']} deleted from database")
+                
+                # Broadcast parent deletion after all cleanup
+                debug_log("MSG", f"Broadcasting deletion event for parent {message['parent_id']}")
+                await ws_manager.broadcast_to_channel(
+                    message["channel_id"],
+                    {
+                        "type": "message.deleted",
+                        "data": {
+                            "message_id": message["parent_id"],
+                            "channel_id": message["channel_id"],
+                            "parent_id": None
+                        }
+                    }
                 )
 
 message_service = MessageService() 

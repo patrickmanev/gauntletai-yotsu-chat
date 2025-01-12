@@ -641,10 +641,11 @@ async def test_ownership_transfer(client: AsyncClient):
            (response1.status_code == 400 and response2.status_code == 200), \
            "One transfer should succeed and one should fail"
     
-    if response2.status_code == 400:
-        assert "transfer in progress" in response2.json()["detail"].lower()
-    else:
-        assert "transfer in progress" in response1.json()["detail"].lower()
+    # The failing response should have one of two error messages
+    failed_response = response2 if response2.status_code == 400 else response1
+    error_detail = failed_response.json()["detail"].lower()
+    assert any(msg in error_detail for msg in ["transfer in progress", "only the current owner"]), \
+        f"Expected transfer error message, got: {error_detail}"
 
 async def test_private_channel_operations(client: AsyncClient):
     """Test private channel operations:

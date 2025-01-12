@@ -247,7 +247,7 @@ class ConnectionManager:
             websocket = self.active_connections.get(connection_id)
             if websocket:
                 error_message = {
-                    "type": "error",
+                    "type": "system.error",
                     "data": {
                         "code": code,
                         "message": message
@@ -401,7 +401,11 @@ class ConnectionManager:
             debug_log("WS", f"Sent ping to connection {connection_id}")
     
     async def _subscribe_to_existing_channels(self, connection_id: str, user_id: int):
-        """Subscribe a connection to all channels the user is a member of."""
+        """Subscribe a connection to all channels the user is a member of:
+        1. All public/private channels they're a member of (any role)
+        2. All their DM channels
+        3. Their notes channel
+        """
         try:
             # Import here to avoid circular imports
             from ..services.channel_service import channel_service
@@ -412,24 +416,27 @@ class ConnectionManager:
                 debug_log("WS", f"├─ Getting channels for user {user_id}")
                 channels = await channel_service.list_channels(db, user_id)
                 debug_log("WS", f"├─ Found {len(channels)} total channels")
-                debug_log("WS", f"├─ Raw channel data: {channels}")
                 
-                # Filter out notes channels
-                channels = [c for c in channels if c["type"] != "notes"]
-                debug_log("WS", f"├─ Found {len(channels)} non-notes channels")
-                debug_log("WS", f"├─ Filtered channel data: {channels}")
+                # Group channels by type for logging
+                channel_types = {}
+                for channel in channels:
+                    channel_type = channel["type"]
+                    if channel_type not in channel_types:
+                        channel_types[channel_type] = []
+                    channel_types[channel_type].append(channel["channel_id"])
                 
-                debug_log("WS", f"├─ Current channel_connections state: {self.channel_connections}")
+                debug_log("WS", f"├─ Channel breakdown by type:")
+                for type_name, channel_ids in channel_types.items():
+                    debug_log("WS", f"├─── {type_name}: {len(channel_ids)} channels - {channel_ids}")
                 
-                # Batch subscribe to all channels
+                # Subscribe to all channels
                 for channel in channels:
                     channel_id = channel["channel_id"]
                     channel_type = channel["type"]
-                    debug_log("WS", f"├─ Processing channel {channel_id} of type {channel_type}")
+                    debug_log("WS", f"├─ Subscribing to {channel_type} channel {channel_id}")
                     await self.join_channel(connection_id, channel_id)
-                    debug_log("WS", f"└─ Subscribed to channel {channel_id}")
-                    debug_log("WS", f"  └─ Updated channel_connections state: {self.channel_connections}")
-                    
+                    debug_log("WS", f"└─── Subscribed to channel {channel_id}")
+                
                 debug_log("WS", f"Channel subscription complete for user {user_id}")
                 debug_log("WS", f"Final channel_connections state: {self.channel_connections}")
         except Exception as e:

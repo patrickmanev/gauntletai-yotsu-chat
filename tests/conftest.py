@@ -39,9 +39,20 @@ class MockWebSocket:
         self.query_params = {}
         self.accepted = False
         
+    @property
+    def events(self) -> List[str]:
+        """Alias for sent_messages to maintain compatibility with tests"""
+        return self.sent_messages
+        
     async def send_text(self, message: str):
         print(f"MockWebSocket received message: {message}")  # Debug logging
         self.sent_messages.append(message)
+    
+    async def send_json(self, data: Any, mode: str = "text") -> None:
+        if mode not in {"text", "binary"}:
+            raise RuntimeError('The "mode" argument should be "text" or "binary".')
+        text = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+        await self.send_text(text)  # Always use send_text since we store as strings
     
     async def close(self, code: int = 1000, reason: str = ""):
         print(f"MockWebSocket closed with code {code}: {reason}")  # Debug logging

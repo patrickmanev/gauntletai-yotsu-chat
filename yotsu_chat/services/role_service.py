@@ -249,6 +249,19 @@ class RoleService:
             (new_role_enum.value, channel_id, target_user_id)
         )
         await db.commit()
+        
+        # Broadcast role update event
+        event = {
+            "type": "role.update",
+            "data": {
+                "channel_id": channel_id,
+                "user_id": target_user_id,
+                "new_role": new_role_enum.value
+            }
+        }
+        from ..core.ws_core import manager as ws_manager
+        await ws_manager.broadcast_to_channel(channel_id, event)
+        debug_log("ROLE", f"Broadcasted role.update event for user {target_user_id}")
         debug_log("ROLE", f"Updated role for user {target_user_id} to {new_role}")
 
     async def transfer_ownership(
@@ -273,7 +286,7 @@ class RoleService:
         debug_log("TRANSFER", f"├─ Current owner: {current_owner_id}")
         debug_log("TRANSFER", f"├─ New owner: {new_owner_id}")
         
-        # First validate channel type and roles
+        # First validate channel type and membership
         channel_info, roles = await self._get_channel_membership_info(
             db, channel_id, current_owner_id, new_owner_id
         )
@@ -283,11 +296,6 @@ class RoleService:
         if channel_info["type"] != ChannelType.PRIVATE:
             debug_log("TRANSFER", "└─ Failed: Not a private channel")
             raise ValueError("Ownership transfer is only available for private channels")
-        
-        current_role = roles.get(current_owner_id)
-        if current_role != ChannelRole.OWNER:
-            debug_log("TRANSFER", "└─ Failed: Current user not owner")
-            raise ValueError("Only the current owner can transfer ownership")
 
         # Check if there are any other members first
         async with db.execute(
@@ -302,8 +310,8 @@ class RoleService:
             if row[0] == 0:
                 debug_log("TRANSFER", "└─ Failed: No other members")
                 raise ValueError("Cannot transfer ownership: channel has no other members")
-        
-        # Then check if new owner is a member
+
+        # Check if new owner is a member
         new_owner_role = roles.get(new_owner_id)
         if not new_owner_role:
             debug_log("TRANSFER", "└─ Failed: New owner not a member")
@@ -311,12 +319,19 @@ class RoleService:
 
         try:
             debug_log("TRANSFER", "├─ Starting transaction")
-            # Start immediate transaction after all validations pass
+            # Start immediate transaction after basic validations pass
             try:
                 await db.execute("BEGIN IMMEDIATE TRANSACTION")
                 debug_log("TRANSFER", "├─ Transaction started successfully")
                 
-                # Check again for other owners now that we have the lock
+                # Check current ownership within transaction
+                current_role = roles.get(current_owner_id)
+                if current_role != ChannelRole.OWNER:
+                    debug_log("TRANSFER", "└─ Failed: Current user not owner")
+                    await db.execute("ROLLBACK")
+                    raise ValueError("Only the current owner can transfer ownership")
+                
+                # Check for other owners now that we have the lock
                 async with db.execute(
                     """
                     SELECT COUNT(*) 
@@ -329,7 +344,6 @@ class RoleService:
                     if row[0] > 0:
                         debug_log("TRANSFER", "└─ Failed: Another owner exists")
                         await db.execute("ROLLBACK")
-                        debug_log("TRANSFER", "└─ Rolled back transaction")
                         raise ValueError("Transfer in progress, please try again later")
                 
                 # Update new owner first
@@ -365,7 +379,7 @@ class RoleService:
                 raise ValueError("Failed to start transfer - database error")
         except Exception as e:
             debug_log("TRANSFER", f"├─ Rolling back due to error: {str(e)}")
-            if not str(e).startswith("Transfer in progress"):  # Only rollback if we haven't already
+            if not str(e).startswith(("Transfer in progress", "Only the current owner")):  # Only rollback if we haven't already
                 await db.execute("ROLLBACK")
             if isinstance(e, ValueError):
                 raise

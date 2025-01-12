@@ -161,7 +161,7 @@ async def test_reactions_cleanup_on_message_delete(
         f"/api/messages/{message_id}",
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert delete_response.status_code == 200
+    assert delete_response.status_code == 204
     
     # Try to get reactions for the deleted message
     response = await client.get(
@@ -213,7 +213,7 @@ async def test_reactions_cleanup_on_thread_parent_delete(
         f"/api/messages/{parent_id}",
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert delete_response.status_code == 200
+    assert delete_response.status_code == 204
     
     # Verify parent message reactions are gone
     response = await client.get(

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from ...core.auth import get_current_user
 from ...core.database import get_db
 from ...schemas.reaction import ReactionCreate, ReactionResponse, ReactionCount
@@ -35,22 +35,20 @@ async def add_reaction(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.delete("/messages/{message_id}/{emoji}")
+@router.delete("/messages/{message_id}")
 async def remove_reaction(
     message_id: int,
-    emoji: str,
     current_user: dict = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db)
 ):
     """Remove a reaction from a message."""
     try:
-        result = await reaction_service.remove_reaction(
+        await reaction_service.remove_reaction(
             db=db,
             message_id=message_id,
-            emoji=emoji,
             user_id=current_user["user_id"]
         )
-        return result
+        return Response(status_code=204)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

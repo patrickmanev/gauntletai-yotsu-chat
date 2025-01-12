@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from starlette.responses import Response
 from ...core.auth import get_current_user
 from ...core.database import get_db
 from ...schemas.message import MessageCreate, MessageResponse, MessageUpdate, MessageWithAttachments
@@ -146,11 +147,11 @@ async def delete_message(
 ):
     """Delete a message"""
     try:
-        result = await message_service.delete_message(
+        await message_service.delete_message(
             db=db,
             message_id=message_id,
             user_id=current_user["user_id"]
         )
-        return result
+        return Response(status_code=204)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) 

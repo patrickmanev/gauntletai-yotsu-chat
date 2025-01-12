@@ -57,10 +57,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         if channel_id is not None:
                             await manager.leave_channel(connection_id, channel_id)
                     
-                    elif message_type == "window_focus":
-                        in_focus = message.get("data", {}).get("in_focus", False)
-                        await presence_manager.update_focus(user_id, connection_id, in_focus)
-                    
                     else:
                         logger.warning(f"Unknown message type from connection {connection_id}: {message_type}")
                         await manager.send_error(connection_id, 400, f"Unknown message type: {message_type}")

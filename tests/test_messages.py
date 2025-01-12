@@ -107,7 +107,7 @@ async def test_public_channel_message_operations(
         f"/api/messages/{message_data.message_id}",
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 204
     
     # Verify message is deleted
     response = await client.get(
@@ -336,7 +336,7 @@ async def test_thread_operations(
         f"/api/messages/{parent_data.message_id}",
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert delete_response.status_code == 200
+    assert delete_response.status_code == 204
     
     # Verify parent is soft-deleted but replies are still visible
     response = await client.get(
@@ -355,7 +355,7 @@ async def test_thread_operations(
             f"/api/messages/{reply.message_id}",
             headers={"Authorization": f"Bearer {access_token}"}
         )
-        assert response.status_code == 200
+        assert response.status_code == 204
     
     # Verify thread still exists with remaining replies
     response = await client.get(
@@ -372,14 +372,14 @@ async def test_thread_operations(
         f"/api/messages/{replies[-1].message_id}",
         headers={"Authorization": f"Bearer {access_token}"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 204
     
     # Delete second user's reply (should trigger full thread cleanup)
     response = await client.delete(
         f"/api/messages/{thread_messages[0].message_id}",
         headers={"Authorization": f"Bearer {second_user_token['access_token']}"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 204
     
     # Verify thread is completely gone
     response = await client.get(
