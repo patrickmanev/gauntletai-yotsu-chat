@@ -1,22 +1,24 @@
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, Any
 from fastapi import WebSocket, WebSocketDisconnect
 import json
 import asyncio
 from contextlib import suppress
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from .auth import decode_token
 from ..utils.errors import YotsuError, ErrorCode
 from ..utils import debug_log
 import logging
 from .config import get_settings
+from websockets.exceptions import InvalidHandshake
+import aiosqlite
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-class WebSocketError(Exception):
+class WebSocketError(InvalidHandshake):
+    """Custom WebSocket error that includes close codes for better client handling"""
     def __init__(self, code: int, message: str):
         self.code = code
-        self.message = message
         super().__init__(message)
 
 class ConnectionManager:
@@ -25,8 +27,10 @@ class ConnectionManager:
         self._lock = asyncio.Lock()
         self.active_connections: Dict[str, WebSocket] = {}  # Dict of connection_id -> WebSocket
         self.channel_connections: Dict[int, Set[str]] = {}  # Dict of channel_id -> set of connection_ids
-        self.connection_health: Dict[str, datetime] = {}  # Dict of connection_id -> last pong time
+        self.connection_health: Dict[str, Dict[str, Any]] = {}  # Dict of connection_id -> health info
         self.connection_users: Dict[str, int] = {}  # Dict of connection_id -> user_id
+        self.connection_rate_limits: Dict[str, Dict[str, Any]] = {}  # Dict of connection_id -> rate limit info
+        self.user_rate_limits: Dict[int, Dict[str, Any]] = {}  # Dict of user_id -> rate limit info
         self._health_check_task = None  # Task for periodic health checks
         logger.info("ConnectionManager initialized")
     
@@ -38,12 +42,8 @@ class ConnectionManager:
                 logger.error("WebSocket authentication failed: Missing token")
                 raise WebSocketError(1008, "Missing authentication token")
             
-            # In test mode, extract user_id from query params
-            if settings.is_test_mode:
-                user_id = int(websocket.query_params.get("user_id", "1"))
-                return user_id
-            
             try:
+                from .auth import decode_token
                 payload = decode_token(token)
                 if not payload:
                     logger.error("WebSocket authentication failed: Invalid token")
@@ -65,14 +65,30 @@ class ConnectionManager:
         await websocket.accept()
         
         self.active_connections[connection_id] = websocket
-        self.connection_health[connection_id] = datetime.now()
+        self.connection_health[connection_id] = {
+            "last_pong": datetime.now(UTC),
+            "pending_ping": False
+        }
         self.connection_users[connection_id] = user_id
+        
+        # Initialize rate limiting for user if not exists
+        if user_id not in self.user_rate_limits:
+            self.user_rate_limits[user_id] = {
+                "message_count": 0,
+                "last_reset": datetime.now(UTC),
+                "rate_limit": 10,  # messages per minute
+                "time_window": 60  # seconds
+            }
+        
         debug_log("WS", f"Active connections after connect: {len(self.active_connections)}")
         
         # Start health check task if not running
         if not self._health_check_task or self._health_check_task.done():
             logger.info("Starting health check task")
             self._health_check_task = asyncio.create_task(self._check_connection_health())
+        
+        # Subscribe to existing channels
+        await self._subscribe_to_existing_channels(connection_id, user_id)
         
         logger.info(f"WebSocket {connection_id} connected for user {user_id}")
     
@@ -92,6 +108,10 @@ class ConnectionManager:
                 k: v for k, v in self.channel_connections.items() if v
             }
             
+            # Clean up rate limit info if this was user's last connection
+            if user_id and not any(uid == user_id for uid in self.connection_users.values()):
+                self.user_rate_limits.pop(user_id, None)
+            
             if websocket:
                 try:
                     await websocket.close()
@@ -108,11 +128,21 @@ class ConnectionManager:
     async def join_channel(self, connection_id: str, channel_id: int):
         """Add a WebSocket connection to a channel"""
         async with self._lock:
-            logger.info(f"Connection {connection_id} joining channel {channel_id}")
+            debug_log("WS", f"Joining channel {channel_id} with connection {connection_id}")
+            debug_log("WS", f"├─ Connection exists: {connection_id in self.active_connections}")
+            debug_log("WS", f"├─ Channel exists: {channel_id in self.channel_connections}")
+            debug_log("WS", f"├─ Current channel_connections: {self.channel_connections}")
+            debug_log("WS", f"├─ Current active_connections: {list(self.active_connections.keys())}")
+            debug_log("WS", f"├─ Current connection_users: {self.connection_users}")
+            
             if channel_id not in self.channel_connections:
-                debug_log("WS", f"Creating new channel set for channel {channel_id}")
+                debug_log("WS", f"├─ Creating new channel set for channel {channel_id}")
                 self.channel_connections[channel_id] = set()
+                debug_log("WS", f"├─ Channel set created: {self.channel_connections[channel_id]}")
+            
             self.channel_connections[channel_id].add(connection_id)
+            debug_log("WS", f"└─ Added connection {connection_id} to channel {channel_id}, total connections: {len(self.channel_connections[channel_id])}")
+            debug_log("WS", f"  └─ Final channel_connections state: {self.channel_connections}")
             logger.info(f"Added connection {connection_id} to channel {channel_id}, total connections: {len(self.channel_connections[channel_id])}")
     
     async def leave_channel(self, connection_id: str, channel_id: int):
@@ -206,7 +236,9 @@ class ConnectionManager:
     
     async def handle_pong(self, connection_id: str):
         """Update last pong time for a connection"""
-        self.connection_health[connection_id] = datetime.now()
+        if connection_id in self.connection_health:
+            self.connection_health[connection_id]["last_pong"] = datetime.now(UTC)
+            self.connection_health[connection_id]["pending_ping"] = False
         debug_log("WS", f"Received pong from connection {connection_id}")
     
     async def send_error(self, connection_id: str, code: int, message: str):
@@ -214,13 +246,15 @@ class ConnectionManager:
         try:
             websocket = self.active_connections.get(connection_id)
             if websocket:
-                await websocket.send_text(json.dumps({
+                error_message = {
                     "type": "error",
                     "data": {
                         "code": code,
                         "message": message
                     }
-                }))
+                }
+                await websocket.send_text(json.dumps(error_message))
+                logger.error(f"Sent error to {connection_id}: {message}")
         except Exception as e:
             logger.error(f"Error sending error message to {connection_id}: {str(e)}")
     
@@ -230,18 +264,19 @@ class ConnectionManager:
             try:
                 # Check every 30 seconds in production, 1 second during tests
                 await asyncio.sleep(30 if not __debug__ else 1)
-                now = datetime.now()
+                now = datetime.now(UTC)
                 dead_connections = set()
                 
                 async with self._lock:
-                    for conn_id, last_pong in self.connection_health.items():
+                    for conn_id, health in self.connection_health.items():
                         try:
-                            if now - last_pong > timedelta(seconds=90):  # No pong for 90 seconds
+                            if now - health["last_pong"] > timedelta(seconds=90):  # No pong for 90 seconds
                                 dead_connections.add(conn_id)
                             else:
                                 websocket = self.active_connections.get(conn_id)
                                 if websocket:
                                     await websocket.send_text(json.dumps({"type": "ping"}))
+                                    self.connection_health[conn_id]["pending_ping"] = True
                         except Exception:
                             dead_connections.add(conn_id)
                 
@@ -276,6 +311,8 @@ class ConnectionManager:
         self.channel_connections.clear()
         self.connection_health.clear()
         self.connection_users.clear()
+        self.connection_rate_limits.clear()
+        self.user_rate_limits.clear()
         self._health_check_task = None
     
     async def send_to_connection(self, connection_id: str, message: dict) -> None:
@@ -297,6 +334,107 @@ class ConnectionManager:
         if channel_id not in self.channel_connections:
             self.channel_connections[channel_id] = set()
             debug_log("WS", f"Initialized WebSocket channel {channel_id}")
+    
+    async def check_rate_limit(self, connection_id: str) -> bool:
+        """Check if a connection has exceeded its rate limit"""
+        user_id = self.connection_users.get(connection_id)
+        if not user_id:
+            return False
+            
+        rate_limit = self.user_rate_limits.get(user_id)
+        if not rate_limit:
+            return False
+            
+        now = datetime.now(UTC)
+        time_since_reset = (now - rate_limit["last_reset"]).total_seconds()
+        
+        # Reset counter if time window has passed
+        if time_since_reset >= rate_limit["time_window"]:
+            rate_limit["message_count"] = 0
+            rate_limit["last_reset"] = now
+            return False
+            
+        # Check if limit exceeded
+        return rate_limit["message_count"] >= rate_limit["rate_limit"]
+    
+    async def increment_message_count(self, connection_id: str):
+        """Increment message count for a user"""
+        user_id = self.connection_users.get(connection_id)
+        if not user_id or user_id not in self.user_rate_limits:
+            return
+            
+        self.user_rate_limits[user_id]["message_count"] += 1
+    
+    async def handle_client_message(self, connection_id: str, message: str):
+        """Handle incoming client message with rate limiting"""
+        try:
+            # Check rate limit before processing
+            if await self.check_rate_limit(connection_id):
+                # Get user_id and all their connections
+                user_id = self.connection_users.get(connection_id)
+                if user_id:
+                    user_connections = [
+                        conn_id for conn_id, uid in self.connection_users.items()
+                        if uid == user_id
+                    ]
+                    # Send error to all user's connections
+                    for conn_id in user_connections:
+                        await self.send_error(conn_id, 429, "Rate limit exceeded")
+                return
+                
+            # Increment message count
+            await self.increment_message_count(connection_id)
+            
+            # Process message...
+            # Add your message handling logic here
+            
+        except Exception as e:
+            logger.error(f"Error handling client message: {str(e)}")
+            await self.send_error(connection_id, 500, "Internal server error")
+    
+    async def send_ping(self, connection_id: str):
+        """Send a ping message to a connection"""
+        websocket = self.active_connections.get(connection_id)
+        if websocket:
+            await websocket.send_text(json.dumps({"type": "ping"}))
+            self.connection_health[connection_id]["pending_ping"] = True
+            debug_log("WS", f"Sent ping to connection {connection_id}")
+    
+    async def _subscribe_to_existing_channels(self, connection_id: str, user_id: int):
+        """Subscribe a connection to all channels the user is a member of."""
+        try:
+            # Import here to avoid circular imports
+            from ..services.channel_service import channel_service
+            
+            debug_log("WS", f"Subscribing connection {connection_id} to existing channels")
+            async with aiosqlite.connect(settings.database_url) as db:
+                # Get all channels the user is a member of
+                debug_log("WS", f"├─ Getting channels for user {user_id}")
+                channels = await channel_service.list_channels(db, user_id)
+                debug_log("WS", f"├─ Found {len(channels)} total channels")
+                debug_log("WS", f"├─ Raw channel data: {channels}")
+                
+                # Filter out notes channels
+                channels = [c for c in channels if c["type"] != "notes"]
+                debug_log("WS", f"├─ Found {len(channels)} non-notes channels")
+                debug_log("WS", f"├─ Filtered channel data: {channels}")
+                
+                debug_log("WS", f"├─ Current channel_connections state: {self.channel_connections}")
+                
+                # Batch subscribe to all channels
+                for channel in channels:
+                    channel_id = channel["channel_id"]
+                    channel_type = channel["type"]
+                    debug_log("WS", f"├─ Processing channel {channel_id} of type {channel_type}")
+                    await self.join_channel(connection_id, channel_id)
+                    debug_log("WS", f"└─ Subscribed to channel {channel_id}")
+                    debug_log("WS", f"  └─ Updated channel_connections state: {self.channel_connections}")
+                    
+                debug_log("WS", f"Channel subscription complete for user {user_id}")
+                debug_log("WS", f"Final channel_connections state: {self.channel_connections}")
+        except Exception as e:
+            logger.error(f"Failed to subscribe to existing channels: {str(e)}")
+            # Don't raise - this is not critical enough to fail the connection
 
 # Global connection manager instance
 manager = ConnectionManager() 

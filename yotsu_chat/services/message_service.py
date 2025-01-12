@@ -1,13 +1,11 @@
 from datetime import datetime
 import logging
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 import aiosqlite
 
-from ..schemas.message import MessageResponse, MessageWithAttachments
 from ..core.ws_core import manager as ws_manager
-from ..utils.errors import raise_unauthorized, raise_forbidden
+from ..utils.errors import raise_forbidden
 from ..utils import debug_log
-from ..schemas.channel import ChannelType, ChannelRole
 from ..services.channel_service import channel_service
 
 logger = logging.getLogger(__name__)

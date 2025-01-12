@@ -10,7 +10,7 @@ os.environ["YOTSU_JWT_TEMP_TOKEN_SECRET_KEY"] = "test-temp-secret"
 from pathlib import Path
 import aiosqlite
 import asyncio
-from typing import AsyncGenerator, Dict, Any, Union
+from typing import AsyncGenerator, Dict, Any, Union, List
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from fastapi.routing import APIRoute, APIWebSocketRoute
 import pyotp
 import jwt
+import json
 
 from yotsu_chat.main import app
 from yotsu_chat.core.database import init_db
@@ -27,6 +28,41 @@ from yotsu_chat.core.config import get_settings, Settings, EnvironmentMode
 settings = get_settings()
 
 pytest_plugins = ["pytest_asyncio"]
+
+class MockWebSocket:
+    """Mock WebSocket class for testing WebSocket functionality"""
+    def __init__(self):
+        self.sent_messages: List[str] = []
+        self.closed = False
+        self.close_code = None
+        self.close_reason = None
+        self.query_params = {}
+        self.accepted = False
+        
+    async def send_text(self, message: str):
+        print(f"MockWebSocket received message: {message}")  # Debug logging
+        self.sent_messages.append(message)
+    
+    async def close(self, code: int = 1000, reason: str = ""):
+        print(f"MockWebSocket closed with code {code}: {reason}")  # Debug logging
+        self.closed = True
+        self.close_code = code
+        self.close_reason = reason
+        
+    async def accept(self):
+        print("MockWebSocket accepted connection")  # Debug logging
+        self.accepted = True
+        
+    async def receive_text(self):
+        # Mock receiving a pong message
+        return json.dumps({"type": "pong"})
+        
+    def get_events_by_type(self, event_type: str) -> List[Dict[str, Any]]:
+        """Helper method to get all events of a specific type"""
+        return [
+            json.loads(msg) for msg in self.sent_messages
+            if json.loads(msg)["type"] == event_type
+        ]
 
 @pytest.fixture(autouse=True)
 def setup_test_environment():
@@ -287,3 +323,112 @@ async def test_message(client: AsyncClient, access_token: str, test_channel: Dic
     )
     assert response.status_code == 201
     return response.json() 
+
+import pytest
+from httpx import AsyncClient
+from typing import Dict, Any, List, AsyncGenerator
+import asyncio
+from datetime import datetime, timedelta, UTC
+from yotsu_chat.core.ws_core import manager as ws_manager
+import uuid
+
+@pytest.fixture
+async def expired_token(client: AsyncClient) -> str:
+    """Create a token that is already expired"""
+    response = await client.post(
+        "/api/auth/login",
+        json={
+            "email": "test@example.com",
+            "password": "Password1234!",
+            "totp_code": "123456"
+        }
+    )
+    assert response.status_code == 200
+    token_data = response.json()
+    
+    # Manually create an expired token with same user_id but past expiration
+    from yotsu_chat.services.token_service import token_service
+    expired = token_service.create_access_token(
+        {"user_id": 1},  # First test user
+        expires_delta=timedelta(minutes=-5)  # Expired 5 minutes ago
+    )
+    return expired
+
+@pytest_asyncio.fixture
+async def rate_limited_websocket(access_token: str) -> AsyncGenerator[Dict[str, Any], None]:
+    """Create a WebSocket connection with rate limiting metadata"""
+    ws = MockWebSocket()
+    ws.query_params["token"] = access_token
+    connection_id = str(uuid.uuid4())
+    
+    # Connect and authenticate
+    user_id = await ws_manager.authenticate_connection(ws)
+    await ws_manager.connect(ws, user_id, connection_id)
+    
+    # Add rate limiting metadata
+    ws_manager.connection_rate_limits[connection_id] = {
+        "message_count": 0,
+        "last_reset": datetime.now(UTC),
+        "rate_limit": 10,  # messages per minute
+        "time_window": 60  # seconds
+    }
+    
+    connection = {
+        "websocket": ws,
+        "connection_id": connection_id,
+        "user_id": user_id
+    }
+    
+    yield connection
+    
+    # Cleanup
+    await ws_manager.disconnect(connection_id)
+    if connection_id in ws_manager.connection_rate_limits:
+        del ws_manager.connection_rate_limits[connection_id]
+
+@pytest_asyncio.fixture
+async def mock_websocket(access_token: str) -> AsyncGenerator[Dict[str, Any], None]:
+    """Create a mock WebSocket connection for testing"""
+    ws = MockWebSocket()
+    ws.query_params["token"] = access_token
+    connection_id = str(uuid.uuid4())
+    
+    # Connect and authenticate
+    user_id = await ws_manager.authenticate_connection(ws)
+    await ws_manager.connect(ws, user_id, connection_id)
+    
+    connection = {
+        "websocket": ws,
+        "connection_id": connection_id,
+        "user_id": user_id
+    }
+    
+    yield connection
+    
+    # Cleanup
+    await ws_manager.disconnect(connection_id)
+
+@pytest_asyncio.fixture
+async def concurrent_websockets(access_token: str) -> AsyncGenerator[List[Dict[str, Any]], None]:
+    """Create multiple WebSocket connections for concurrent testing"""
+    connections = []
+    for _ in range(3):  # Create 3 concurrent connections
+        ws = MockWebSocket()
+        ws.query_params["token"] = access_token
+        connection_id = str(uuid.uuid4())
+        
+        # Connect and authenticate
+        user_id = await ws_manager.authenticate_connection(ws)
+        await ws_manager.connect(ws, user_id, connection_id)
+        
+        connections.append({
+            "websocket": ws,
+            "connection_id": connection_id,
+            "user_id": user_id
+        })
+    
+    yield connections
+    
+    # Cleanup
+    for conn in connections:
+        await ws_manager.disconnect(conn["connection_id"]) 

@@ -92,7 +92,7 @@ async def add_channel_member(
         debug_log("ERROR", f"Failed to add channel member: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to add channel member")
 
-@router.delete("/{channel_id}/{user_id}")
+@router.delete("/{channel_id}/{user_id}", status_code=204)
 async def remove_channel_member(
     channel_id: int,
     user_id: int,
@@ -111,7 +111,7 @@ async def remove_channel_member(
     """
     try:
         await channel_service.remove_member(db, channel_id, user_id, current_user["user_id"])
-        return {"status": "success", "message": "Member removed successfully"}
+        return None
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

@@ -6,9 +6,9 @@ from ..services.token_service import token_service, security
 
 logger = logging.getLogger(__name__)
 
-async def decode_token(token: str):
+def decode_token(token: str):
     """Decode and validate a JWT token."""
-    return await token_service.decode_token(token)
+    return token_service.decode_token(token)
 
 async def get_current_user(credentials = Depends(security)):
     """FastAPI dependency for getting the current user from JWT token."""

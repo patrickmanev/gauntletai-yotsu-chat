@@ -6,6 +6,7 @@ from ..schemas.channel import ChannelType, ChannelRole
 from .role_service import role_service
 from fastapi import HTTPException
 from ..utils.errors import YotsuError
+from ..core.ws_core import manager as ws_manager
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,19 @@ class ChannelService:
             await db.commit()
             debug_log("CHANNEL", f"Created channel {channel_id}")
             
+            # Subscribe creator's WebSocket connections to the channel
+            debug_log("CHANNEL", f"├─ Attempting to subscribe creator {created_by} to channel {channel_id}")
+            debug_log("CHANNEL", f"├─ Active connections: {list(ws_manager.active_connections.keys())}")
+            debug_log("CHANNEL", f"├─ Connection users: {ws_manager.connection_users}")
+            
+            for connection_id, websocket in ws_manager.active_connections.items():
+                debug_log("CHANNEL", f"├─ Checking connection {connection_id}")
+                user_id = ws_manager.connection_users.get(connection_id)
+                debug_log("CHANNEL", f"├─ Connection {connection_id} belongs to user {user_id}")
+                if user_id == created_by:
+                    await ws_manager.join_channel(connection_id, channel_id)
+                    debug_log("CHANNEL", f"└─ Subscribed connection {connection_id} to channel {channel_id}")
+            
             # Add initial members if provided
             if initial_members:
                 # Filter out creator as they're already added
@@ -301,7 +315,11 @@ class ChannelService:
             # Execute query
             debug_log("CHANNEL", f"├─ Query params: {params}")
             async with db.execute(query, params) as cursor:
-                channels = [dict(row) for row in await cursor.fetchall()]
+                # Get column names from cursor description
+                columns = [col[0] for col in cursor.description]
+                rows = await cursor.fetchall()
+                # Convert rows to dictionaries with proper column names
+                channels = [dict(zip(columns, row)) for row in rows]
                 debug_log("CHANNEL", f"└─ Found {len(channels)} channels")
                 return channels
             
@@ -473,6 +491,13 @@ class ChannelService:
             await db.commit()
             
             debug_log("CHANNEL", f"└─ Added user {user_id} to channel {channel_id}")
+            
+            # Subscribe all user's active WebSocket connections to the channel
+            for connection_id, websocket in ws_manager.active_connections.items():
+                if ws_manager.connection_users.get(connection_id) == user_id:
+                    await ws_manager.join_channel(connection_id, channel_id)
+                    debug_log("CHANNEL", f"└─ Subscribed connection {connection_id} to channel {channel_id}")
+            
             return await self.get_member_info(db, channel_id, user_id)
             
         except (HTTPException, YotsuError):
@@ -531,6 +556,23 @@ class ChannelService:
             )
             await db.commit()
             debug_log("CHANNEL", f"User {target_user_id} was removed from channel {channel_id}")
+
+            # Unsubscribe all user's active WebSocket connections from the channel
+            for connection_id in ws_manager.active_connections:
+                if ws_manager.connection_users.get(connection_id) == target_user_id:
+                    await ws_manager.leave_channel(connection_id, channel_id)
+                    debug_log("CHANNEL", f"└─ Unsubscribed connection {connection_id} from channel {channel_id}")
+
+            # Broadcast member leave event
+            event = {
+                "type": "member_leave",
+                "data": {
+                    "channel_id": channel_id,
+                    "user_id": target_user_id
+                }
+            }
+            await ws_manager.broadcast_to_channel(channel_id, event)
+            debug_log("CHANNEL", "Broadcasted member_leave event")
                 
         except Exception as e:
             logger.error(f"Failed to remove channel member: {str(e)}")
@@ -570,10 +612,10 @@ class ChannelService:
                 if not result:
                     raise ValueError("Channel not found")
                 
-                channel_type = result["type"]
+                channel_type = result[0]  # Access by index since it's a tuple
                 if channel_type not in [ChannelType.PUBLIC, ChannelType.PRIVATE]:
                     raise ValueError("Can only list members for public/private channels")
-            
+
             # Build query based on channel type
             if channel_type == ChannelType.PRIVATE:
                 query = """
@@ -607,10 +649,14 @@ class ChannelService:
                 """
             
             async with db.execute(query, [channel_id]) as cursor:
-                members = await cursor.fetchall()
-                
+                # Get column names from cursor description
+                columns = [col[0] for col in cursor.description]
+                rows = await cursor.fetchall()
+                # Convert rows to dictionaries with proper column names
+                members = [dict(zip(columns, row)) for row in rows]
+            
             debug_log("CHANNEL", f"Found {len(members)} members for channel {channel_id}")
-            return [dict(member) for member in members]
+            return members
             
         except Exception as e:
             logger.error(f"Failed to get channel members: {str(e)}")
@@ -724,6 +770,17 @@ class ChannelService:
             await db.commit()
             
             debug_log("CHANNEL", "├─ Channel updated successfully")
+            
+            # Broadcast channel update event
+            event = {
+                "type": "channel_update",
+                "data": {
+                    "channel_id": channel_id,
+                    "name": name
+                }
+            }
+            await ws_manager.broadcast_to_channel(channel_id, event)
+            debug_log("CHANNEL", "├─ Broadcasted channel update event")
             
             # Return updated channel info
             channels = await self.list_channels(

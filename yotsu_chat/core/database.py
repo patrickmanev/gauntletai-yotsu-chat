@@ -198,7 +198,7 @@ async def init_db(force: bool = False):
                 END;
             """)
 
-            # Create trigger to cleanup empty public/private channels
+            # Create trigger to cleanup empty channels and their content
             await db.execute("""
                 CREATE TRIGGER IF NOT EXISTS cleanup_empty_channels
                 AFTER DELETE ON channels_members
@@ -211,7 +211,27 @@ async def init_db(force: bool = False):
                     WHERE channel_id = OLD.channel_id
                 ) IN ('public', 'private')
                 BEGIN
-                    DELETE FROM channels WHERE channel_id = OLD.channel_id;
+                    -- Delete all reactions to messages in the channel
+                    DELETE FROM reactions
+                    WHERE message_id IN (
+                        SELECT message_id FROM messages
+                        WHERE channel_id = OLD.channel_id
+                    );
+                    
+                    -- Delete all attachments for messages in the channel
+                    DELETE FROM attachments
+                    WHERE message_id IN (
+                        SELECT message_id FROM messages
+                        WHERE channel_id = OLD.channel_id
+                    );
+                    
+                    -- Delete all messages in the channel
+                    DELETE FROM messages
+                    WHERE channel_id = OLD.channel_id;
+                    
+                    -- Finally delete the channel itself
+                    DELETE FROM channels
+                    WHERE channel_id = OLD.channel_id;
                 END;
             """)
             

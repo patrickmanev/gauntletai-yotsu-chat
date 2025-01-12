@@ -278,7 +278,7 @@ async def test_public_channel_operations(client: AsyncClient):
         f"/api/members/{public_channel['channel_id']}/{user2['user_id']}",
         headers={"Authorization": f"Bearer {user2['access_token']}"}
     )
-    assert response.status_code == 200, "Members should be able to leave public channels"
+    assert response.status_code == 204, "Members should be able to leave public channels"
     
     # Add user2 back for testing removal by another member
     response = await client.post(
@@ -293,7 +293,7 @@ async def test_public_channel_operations(client: AsyncClient):
         f"/api/members/{public_channel['channel_id']}/{user2['user_id']}",
         headers={"Authorization": f"Bearer {user3['access_token']}"}
     )
-    assert response.status_code == 200, "Any member should be able to remove other members from public channels"
+    assert response.status_code == 204, "Any member should be able to remove other members from public channels"
     
     # Verify member was removed
     response = await client.get(
@@ -767,7 +767,7 @@ async def test_private_channel_operations(client: AsyncClient):
         f"/api/members/{private_channel['channel_id']}/{user3['user_id']}",
         headers={"Authorization": f"Bearer {user2['access_token']}"}  # user2 is now owner
     )
-    assert response.status_code == 200, "Failed to remove user3 from channel"
+    assert response.status_code == 204, "Failed to remove user3 from channel"
 
     # Only owner should be able to update private channel name
     response = await client.patch(
