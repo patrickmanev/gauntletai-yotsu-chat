@@ -1,6 +1,5 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends, HTTPException
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from yotsu_chat.core.ws_core import manager
-from yotsu_chat.core.presence import presence_manager
 from yotsu_chat.utils import debug_log
 from yotsu_chat.core.config import get_settings
 import logging
@@ -21,7 +20,6 @@ async def websocket_endpoint(websocket: WebSocket):
         
         # Accept connection
         await manager.connect(websocket, user_id, connection_id)
-        await presence_manager.handle_connect(user_id, connection_id)
         
         # Send connection_id to client
         await websocket.send_json({
@@ -73,7 +71,6 @@ async def websocket_endpoint(websocket: WebSocket):
         finally:
             # Clean up connection
             await manager.disconnect(connection_id)
-            await presence_manager.handle_disconnect(user_id, connection_id)
     
     except Exception as e:
         logger.error(f"Error in websocket_endpoint: {str(e)}")

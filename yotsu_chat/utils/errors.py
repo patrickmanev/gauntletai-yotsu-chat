@@ -22,6 +22,9 @@ class ErrorCode:
     FILE_TOO_LARGE = 4001
     INVALID_FILE_TYPE = 4002
     FILE_NOT_FOUND = 4003
+    
+    # Presence errors (5000-5999)
+    PRESENCE_UPDATE_FAILED = 5001
 
 class YotsuError(HTTPException):
     def __init__(

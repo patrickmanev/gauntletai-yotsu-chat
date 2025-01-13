@@ -1,5 +1,5 @@
 """Core functionality and configuration"""
 
-from . import auth, database, presence, ws_core
+from . import auth, database, ws_core
 
-__all__ = ['auth', 'database', 'presence', 'ws_core']
+__all__ = ['auth', 'database', 'ws_core']

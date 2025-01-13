@@ -31,6 +31,8 @@ class ConnectionManager:
         self.connection_users: Dict[str, int] = {}  # Dict of connection_id -> user_id
         self.connection_rate_limits: Dict[str, Dict[str, Any]] = {}  # Dict of connection_id -> rate limit info
         self.user_rate_limits: Dict[int, Dict[str, Any]] = {}  # Dict of user_id -> rate limit info
+        self.online_users: Set[int] = set()  # Set of online user_ids
+        self.user_connection_count: Dict[int, int] = {}  # Track connection count per user
         self._health_check_task = None  # Task for periodic health checks
         logger.info("ConnectionManager initialized")
     
@@ -71,6 +73,11 @@ class ConnectionManager:
         }
         self.connection_users[connection_id] = user_id
         
+        # Update presence tracking
+        self.user_connection_count[user_id] = self.user_connection_count.get(user_id, 0) + 1
+        was_offline = user_id not in self.online_users
+        self.online_users.add(user_id)
+        
         # Initialize rate limiting for user if not exists
         if user_id not in self.user_rate_limits:
             self.user_rate_limits[user_id] = {
@@ -90,6 +97,13 @@ class ConnectionManager:
         # Subscribe to existing channels
         await self._subscribe_to_existing_channels(connection_id, user_id)
         
+        # Send initial presence list to new connection
+        await self.send_initial_presence(connection_id)
+        
+        # Broadcast presence change if user was previously offline
+        if was_offline:
+            await self._broadcast_presence_change(user_id, True)
+        
         logger.info(f"WebSocket {connection_id} connected for user {user_id}")
     
     async def disconnect(self, connection_id: str):
@@ -98,6 +112,14 @@ class ConnectionManager:
             websocket = self.active_connections.pop(connection_id, None)
             user_id = self.connection_users.pop(connection_id, None)
             self.connection_health.pop(connection_id, None)
+            
+            if user_id:
+                # Update presence tracking
+                self.user_connection_count[user_id] = max(0, self.user_connection_count.get(user_id, 1) - 1)
+                if self.user_connection_count[user_id] == 0:
+                    self.online_users.discard(user_id)
+                    await self._broadcast_presence_change(user_id, False)
+                    self.user_connection_count.pop(user_id)
             
             # Remove from all channels
             for channel_connections in self.channel_connections.values():
@@ -259,15 +281,17 @@ class ConnectionManager:
             logger.error(f"Error sending error message to {connection_id}: {str(e)}")
     
     async def _check_connection_health(self):
-        """Periodic health check for all connections"""
+        """Periodic health check for all connections and state validation"""
         while True:
             try:
                 # Check every 30 seconds in production, 1 second during tests
                 await asyncio.sleep(30 if not __debug__ else 1)
                 now = datetime.now(UTC)
                 dead_connections = set()
+                state_inconsistencies = []
                 
                 async with self._lock:
+                    # Check connection health
                     for conn_id, health in self.connection_health.items():
                         try:
                             if now - health["last_pong"] > timedelta(seconds=90):  # No pong for 90 seconds
@@ -279,14 +303,43 @@ class ConnectionManager:
                                     self.connection_health[conn_id]["pending_ping"] = True
                         except Exception:
                             dead_connections.add(conn_id)
+                    
+                    # Validate presence state consistency
+                    for user_id in list(self.user_connection_count.keys()):
+                        actual_count = sum(1 for uid in self.connection_users.values() if uid == user_id)
+                        if actual_count != self.user_connection_count[user_id]:
+                            state_inconsistencies.append((user_id, actual_count))
+                            logger.warning(
+                                f"Found presence state inconsistency for user {user_id}: "
+                                f"recorded={self.user_connection_count[user_id]}, actual={actual_count}"
+                            )
+                    
+                    # Fix any inconsistencies found
+                    for user_id, actual_count in state_inconsistencies:
+                        if actual_count == 0:
+                            # User has no actual connections but is marked as having some
+                            self.online_users.discard(user_id)
+                            self.user_connection_count.pop(user_id)
+                            await self._broadcast_presence_change(user_id, False)
+                            logger.info(f"Fixed: Marked user {user_id} as offline (no active connections)")
+                        else:
+                            # User has actual connections but count is wrong
+                            self.user_connection_count[user_id] = actual_count
+                            if actual_count > 0:
+                                self.online_users.add(user_id)
+                            logger.info(f"Fixed: Updated connection count for user {user_id} to {actual_count}")
                 
                 # Clean up dead connections
                 for conn_id in dead_connections:
                     try:
                         await self.disconnect(conn_id)
-                    except Exception:
-                        pass
-                    logger.warning(f"Removed dead connection {conn_id} during health check")
+                        logger.warning(f"Removed dead connection {conn_id} during health check")
+                    except Exception as e:
+                        logger.error(f"Error disconnecting dead connection {conn_id}: {str(e)}")
+                
+                if state_inconsistencies:
+                    logger.warning(f"Fixed {len(state_inconsistencies)} presence state inconsistencies")
+                    
             except Exception as e:
                 logger.error(f"Error in health check: {str(e)}")
             except asyncio.CancelledError:
@@ -313,6 +366,8 @@ class ConnectionManager:
         self.connection_users.clear()
         self.connection_rate_limits.clear()
         self.user_rate_limits.clear()
+        self.online_users.clear()
+        self.user_connection_count.clear()
         self._health_check_task = None
     
     async def send_to_connection(self, connection_id: str, message: dict) -> None:
@@ -442,6 +497,33 @@ class ConnectionManager:
         except Exception as e:
             logger.error(f"Failed to subscribe to existing channels: {str(e)}")
             # Don't raise - this is not critical enough to fail the connection
+    
+    async def send_initial_presence(self, connection_id: str):
+        """Send current online users to new connection"""
+        try:
+            message = {
+                "type": "presence.initial",
+                "data": {
+                    "online_users": list(self.online_users)
+                }
+            }
+            await self.send_to_connection(connection_id, message)
+        except Exception as e:
+            logger.error(f"Error sending initial presence: {str(e)}")
+    
+    async def _broadcast_presence_change(self, user_id: int, is_online: bool):
+        """Broadcast presence change to all connections"""
+        try:
+            message = {
+                "type": "presence.update",
+                "data": {
+                    "user_id": user_id,
+                    "status": "online" if is_online else "offline"
+                }
+            }
+            await self.broadcast_to_all(message)
+        except Exception as e:
+            logger.error(f"Error broadcasting presence change: {str(e)}")
 
 # Global connection manager instance
 manager = ConnectionManager() 
