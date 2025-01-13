@@ -98,7 +98,7 @@ class MessageService:
             latest_reply = await self.get_message(db, thread_meta["latest_reply_id"], user_id)
 
             # Broadcast thread update first
-            await ws_manager.broadcast_to_channel(
+            await ws_manager.broadcast_to_subscribers(
                 channel_id,
                 {
                     "type": "thread.update",
@@ -119,7 +119,7 @@ class MessageService:
             debug_log("MSG", f"Sent thread.update for thread {parent_id} - clients should wait for message.created")
         
         # Then broadcast the message creation
-        await ws_manager.broadcast_to_channel(
+        await ws_manager.broadcast_to_subscribers(
             channel_id,
             {
                 "type": "message.created",
@@ -266,7 +266,7 @@ class MessageService:
         updated_message = await self.get_message(db, message_id, user_id)
         
         # Broadcast update
-        await ws_manager.broadcast_to_channel(
+        await ws_manager.broadcast_to_subscribers(
             updated_message["channel_id"],
             {
                 "type": "message.updated",
@@ -362,7 +362,7 @@ class MessageService:
                     await db.commit()
                     
                     debug_log("MSG", f"Broadcasting soft delete event for parent {message_id}")
-                    await ws_manager.broadcast_to_channel(
+                    await ws_manager.broadcast_to_subscribers(
                         message["channel_id"],
                         {
                             "type": "message.soft_deleted",
@@ -433,7 +433,7 @@ class MessageService:
             if parent_to_delete:
                 # If we're deleting a thread (parent + last reply), only broadcast parent deletion
                 debug_log("MSG", f"Broadcasting deletion event for parent {parent_to_delete}")
-                await ws_manager.broadcast_to_channel(
+                await ws_manager.broadcast_to_subscribers(
                     message["channel_id"],
                     {
                         "type": "message.deleted",
@@ -447,7 +447,7 @@ class MessageService:
             elif not message["parent_id"]:
                 # If we're deleting a standalone message (not a reply), broadcast its deletion
                 debug_log("MSG", f"Broadcasting deletion event for standalone message {message_id}")
-                await ws_manager.broadcast_to_channel(
+                await ws_manager.broadcast_to_subscribers(
                     message["channel_id"],
                     {
                         "type": "message.deleted",
@@ -461,7 +461,7 @@ class MessageService:
             else:
                 # If we're deleting a reply (but not the last one), broadcast its deletion
                 debug_log("MSG", f"Broadcasting deletion event for reply {message_id}")
-                await ws_manager.broadcast_to_channel(
+                await ws_manager.broadcast_to_subscribers(
                     message["channel_id"],
                     {
                         "type": "message.deleted",
@@ -565,7 +565,7 @@ class MessageService:
                 
                 # Broadcast parent deletion after all cleanup
                 debug_log("MSG", f"Broadcasting deletion event for parent {message['parent_id']}")
-                await ws_manager.broadcast_to_channel(
+                await ws_manager.broadcast_to_subscribers(
                     message["channel_id"],
                     {
                         "type": "message.deleted",

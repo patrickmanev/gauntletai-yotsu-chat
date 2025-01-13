@@ -260,7 +260,7 @@ class RoleService:
             }
         }
         from ..core.ws_core import manager as ws_manager
-        await ws_manager.broadcast_to_channel(channel_id, event)
+        await ws_manager.broadcast_to_subscribers(channel_id, event)
         debug_log("ROLE", f"Broadcasted role.update event for user {target_user_id}")
         debug_log("ROLE", f"Updated role for user {target_user_id} to {new_role}")
 

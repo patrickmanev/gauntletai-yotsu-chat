@@ -92,7 +92,7 @@ class ReactionService:
                 "channel_id": channel_id
             }
         }
-        await ws_manager.broadcast_to_channel(channel_id, event)
+        await ws_manager.broadcast_to_subscribers(channel_id, event)
         debug_log("REACTION", f"Broadcasted reaction.added event for message {message_id}")
         
         return response_data
@@ -132,7 +132,7 @@ class ReactionService:
                     "channel_id": channel_id
                 }
             }
-            await ws_manager.broadcast_to_channel(channel_id, event)
+            await ws_manager.broadcast_to_subscribers(channel_id, event)
         except ValueError as e:
             debug_log("REACTION", f"Error removing reaction: {e}")
             raise e

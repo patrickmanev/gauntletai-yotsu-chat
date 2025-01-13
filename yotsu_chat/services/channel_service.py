@@ -109,7 +109,7 @@ class ChannelService:
                 user_id = ws_manager.connection_users.get(connection_id)
                 if user_id in [user1_id, user2_id]:
                     debug_log("CHANNEL", f"├─ Subscribing user {user_id}'s connection {connection_id} to new DM channel {channel_id}")
-                    await ws_manager.join_channel(connection_id, channel_id)
+                    await ws_manager.subscribe_to_updates(connection_id, channel_id)
                     debug_log("CHANNEL", f"└─ Subscribed user {user_id}'s connection {connection_id}")
             
             return channel_id, True
@@ -233,7 +233,7 @@ class ChannelService:
                 user_id = ws_manager.connection_users.get(connection_id)
                 debug_log("CHANNEL", f"├─ Connection {connection_id} belongs to user {user_id}")
                 if user_id == created_by:
-                    await ws_manager.join_channel(connection_id, channel_id)
+                    await ws_manager.subscribe_to_updates(connection_id, channel_id)
                     debug_log("CHANNEL", f"└─ Subscribed connection {connection_id} to channel {channel_id}")
             
             # Add initial members if provided
@@ -508,7 +508,7 @@ class ChannelService:
             # Subscribe all user's active WebSocket connections to the channel
             for connection_id, websocket in ws_manager.active_connections.items():
                 if ws_manager.connection_users.get(connection_id) == user_id:
-                    await ws_manager.join_channel(connection_id, channel_id)
+                    await ws_manager.subscribe_to_updates(connection_id, channel_id)
                     debug_log("CHANNEL", f"└─ Subscribed connection {connection_id} to channel {channel_id}")
             
             # Get member info for broadcast
@@ -519,7 +519,7 @@ class ChannelService:
                 "type": "member.joined",
                 "data": member_info
             }
-            await ws_manager.broadcast_to_channel(channel_id, event)
+            await ws_manager.broadcast_to_subscribers(channel_id, event)
             debug_log("CHANNEL", "Broadcasted member.joined event")
             
             return member_info
@@ -595,7 +595,7 @@ class ChannelService:
             # Unsubscribe all user's active WebSocket connections from the channel
             for connection_id in ws_manager.active_connections:
                 if ws_manager.connection_users.get(connection_id) == target_user_id:
-                    await ws_manager.leave_channel(connection_id, channel_id)
+                    await ws_manager.unsubscribe_from_updates(connection_id, channel_id)
                     debug_log("CHANNEL", f"└─ Unsubscribed connection {connection_id} from channel {channel_id}")
 
             # Only broadcast member.left if this wasn't the last member
@@ -608,7 +608,7 @@ class ChannelService:
                         "user_id": target_user_id
                     }
                 }
-                await ws_manager.broadcast_to_channel(channel_id, event)
+                await ws_manager.broadcast_to_subscribers(channel_id, event)
                 debug_log("CHANNEL", "Broadcasted member.left event")
             else:
                 debug_log("CHANNEL", "Skipped member.left broadcast for last member (channel deleted)")
@@ -819,7 +819,7 @@ class ChannelService:
                     "name": name
                 }
             }
-            await ws_manager.broadcast_to_channel(channel_id, event)
+            await ws_manager.broadcast_to_subscribers(channel_id, event)
             debug_log("CHANNEL", "├─ Broadcasted channel update event")
             
             # Return updated channel info

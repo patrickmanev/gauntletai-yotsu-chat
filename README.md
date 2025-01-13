@@ -1,49 +1,59 @@
 # Yotsu Chat
 
-A modern chat application built with FastAPI and Next.js.
+A modern chat app built with FastAPI and Next.js. Think Slack, but cooler 😎
 
-## Project Structure
+## Getting Started
 
-- `app/` - Backend FastAPI application
-- `webapp/` - Frontend Next.js application
+### Backend Setup
 
-## Setup
-
-### Backend (FastAPI)
-
-1. Create a virtual environment:
+1. Fire up your virtual environment:
 ```bash
 python -m venv yotsu-chat-venv
-source yotsu-chat-venv/bin/activate  # On Windows use: .\yotsu-chat-venv\Scripts\activate
+# On Windows:
+.\yotsu-chat-venv\Scripts\activate
+# On Unix/MacOS:
+source yotsu-chat-venv/bin/activate
 ```
 
-2. Install dependencies:
+2. Install the goods:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Run the backend server:
+3. Start the backend:
 ```bash
 uvicorn main:app --reload
 ```
 
-### Frontend (Next.js)
+### Frontend Setup
 
-1. Install dependencies:
+1. Head over to the frontend directory and install dependencies:
 ```bash
-cd webapp
+cd yotsu-chat-frontend
 npm install
 ```
 
-2. Run the development server:
+2. Launch it:
 ```bash
 npm run dev
 ```
 
-## Features
+## Cool Features
 
-- Real-time chat functionality
-- Channel-based communication
-- Modern UI with Tailwind CSS
-- WebSocket-based message delivery
-- User presence tracking 
+- Real-time messaging with WebSocket magic ⚡
+- Public and private channels 🔒
+- Direct messaging 💬
+- Thread support for organized convos 🧵
+- Emoji reactions because why not 🎉
+- User presence tracking 👀
+- File sharing capabilities (coming soon) 📎
+- Versatile search and filtering (coming soon) 🔍
+- Modern UI powered by Tailwind and shadcn/ui 💅
+
+## Tech Stack
+
+- **Backend**: FastAPI + SQLite
+- **Frontend**: Next.js 15 + React 18
+- **Styling**: Tailwind CSS + shadcn/ui
+- **Real-time**: WebSocket
+- **Auth**: JWT + 2FA 

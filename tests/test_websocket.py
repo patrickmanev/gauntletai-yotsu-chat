@@ -13,7 +13,6 @@ from yotsu_chat.core.config import get_settings
 from yotsu_chat.utils import debug_log
 from .conftest import MockWebSocket, register_test_user
 from httpx import AsyncClient
-from yotsu_chat.services.channel_service import channel_service
 import aiosqlite
 
 logger = logging.getLogger(__name__)
@@ -26,7 +25,7 @@ async def cleanup_manager() -> AsyncGenerator[None, None]:
     await ws_manager.cleanup()
     ws_manager._health_check_task = None
     ws_manager.active_connections.clear()
-    ws_manager.channel_connections.clear()
+    ws_manager.subscription_groups.clear()
     ws_manager.connection_health.clear()
     ws_manager.connection_rate_limits.clear()
 
@@ -139,15 +138,15 @@ async def test_websocket_auto_subscription(
     debug_log("WS_AUTO", "Verifying initial auto-subscription")
     
     # Check channel subscriptions for all channel types
-    assert channels["public"] in ws_manager.channel_connections
-    assert mock_websocket["connection_id"] in ws_manager.channel_connections[channels["public"]]
+    assert channels["public"] in ws_manager.subscription_groups
+    assert mock_websocket["connection_id"] in ws_manager.subscription_groups[channels["public"]]
     
-    assert channels["private"] in ws_manager.channel_connections
-    assert mock_websocket["connection_id"] in ws_manager.channel_connections[channels["private"]]
+    assert channels["private"] in ws_manager.subscription_groups
+    assert mock_websocket["connection_id"] in ws_manager.subscription_groups[channels["private"]]
     
     # Verify notes channel is included
-    assert channels["notes"] in ws_manager.channel_connections
-    assert mock_websocket["connection_id"] in ws_manager.channel_connections[channels["notes"]]
+    assert channels["notes"] in ws_manager.subscription_groups
+    assert mock_websocket["connection_id"] in ws_manager.subscription_groups[channels["notes"]]
     debug_log("WS_AUTO", "Initial auto-subscription verified")
     
     # 3. Test subscription persistence across reconnection
@@ -168,14 +167,14 @@ async def test_websocket_auto_subscription(
     debug_log("WS_AUTO", f"Created new connection: {new_connection_id}")
     
     # Verify channels were re-subscribed (including notes)
-    assert channels["public"] in ws_manager.channel_connections
-    assert new_connection_id in ws_manager.channel_connections[channels["public"]]
+    assert channels["public"] in ws_manager.subscription_groups
+    assert new_connection_id in ws_manager.subscription_groups[channels["public"]]
     
-    assert channels["private"] in ws_manager.channel_connections
-    assert new_connection_id in ws_manager.channel_connections[channels["private"]]
+    assert channels["private"] in ws_manager.subscription_groups
+    assert new_connection_id in ws_manager.subscription_groups[channels["private"]]
     
-    assert channels["notes"] in ws_manager.channel_connections
-    assert new_connection_id in ws_manager.channel_connections[channels["notes"]]
+    assert channels["notes"] in ws_manager.subscription_groups
+    assert new_connection_id in ws_manager.subscription_groups[channels["notes"]]
     debug_log("WS_AUTO", "Subscription persistence verified")
     
     # Test message delivery to auto-subscribed channel
@@ -203,7 +202,7 @@ async def test_websocket_auto_subscription(
     assert response.status_code == 204
     
     # Verify channel was unsubscribed
-    assert channels["public"] not in ws_manager.channel_connections
+    assert channels["public"] not in ws_manager.subscription_groups
     
     # Create a new channel for testing addition subscription
     debug_log("WS_AUTO", "Creating new channel for addition subscription test")
@@ -225,8 +224,8 @@ async def test_websocket_auto_subscription(
     assert response.status_code == 201
     
     # Verify channel was auto-subscribed
-    assert addition_channel_id in ws_manager.channel_connections
-    assert new_connection_id in ws_manager.channel_connections[addition_channel_id]
+    assert addition_channel_id in ws_manager.subscription_groups
+    assert new_connection_id in ws_manager.subscription_groups[addition_channel_id]
     
     # Cleanup
     await ws_manager.disconnect(new_connection_id)
@@ -460,11 +459,11 @@ async def test_websocket_channel_subscriptions(
     debug_log("WS_CHAN", f"Channel created: {channel_id}")
     
     # Join the channel
-    await ws_manager.join_channel(connection_id, channel_id)
+    await ws_manager.subscribe_to_updates(connection_id, channel_id)
     
     # Verify WebSocket is subscribed to the channel
-    assert channel_id in ws_manager.channel_connections
-    assert connection_id in ws_manager.channel_connections[channel_id]
+    assert channel_id in ws_manager.subscription_groups
+    assert connection_id in ws_manager.subscription_groups[channel_id]
     debug_log("WS_CHAN", f"Verified subscription for connection_id: {connection_id} to channel: {channel_id}")
         
     # 2. Test new channel subscription
@@ -479,11 +478,11 @@ async def test_websocket_channel_subscriptions(
     debug_log("WS_CHAN", f"Second channel created: {channel_id_2}")
     
     # Join the second channel
-    await ws_manager.join_channel(connection_id, channel_id_2)
+    await ws_manager.subscribe_to_updates(connection_id, channel_id_2)
     
     # Verify subscription to new channel
-    assert channel_id_2 in ws_manager.channel_connections
-    assert connection_id in ws_manager.channel_connections[channel_id_2]
+    assert channel_id_2 in ws_manager.subscription_groups
+    assert connection_id in ws_manager.subscription_groups[channel_id_2]
     debug_log("WS_CHAN", f"Verified subscription to second channel: {channel_id_2}")
     
     # 3. Test channel unsubscription
@@ -495,10 +494,10 @@ async def test_websocket_channel_subscriptions(
     assert response.status_code == 204
     
     # Leave the channel
-    await ws_manager.leave_channel(connection_id, channel_id)
+    await ws_manager.unsubscribe_from_updates(connection_id, channel_id)
     
     # Verify WebSocket is unsubscribed (channel should be removed since it's empty)
-    assert channel_id not in ws_manager.channel_connections
+    assert channel_id not in ws_manager.subscription_groups
     debug_log("WS_CHAN", f"Verified unsubscription from channel: {channel_id}")
     
     # 4. Test multiple channel message routing
@@ -603,13 +602,13 @@ async def test_websocket_channel_broadcasts(
             assert "role" in latest_event["data"]  # Private channel, so role should be present
         
         # Verify automatic subscription
-        assert channel_id in ws_manager.channel_connections
-        assert conn["connection_id"] in ws_manager.channel_connections[channel_id]
+        assert channel_id in ws_manager.subscription_groups
+        assert conn["connection_id"] in ws_manager.subscription_groups[channel_id]
         debug_log("WS_BCAST", f"Added user_id: {conn['user_id']} to channel and verified subscription")
     
     # Verify main websocket was automatically subscribed (as channel creator)
-    assert channel_id in ws_manager.channel_connections
-    assert connection_id in ws_manager.channel_connections[channel_id]
+    assert channel_id in ws_manager.subscription_groups
+    assert connection_id in ws_manager.subscription_groups[channel_id]
     debug_log("WS_BCAST", f"Verified main websocket subscription")
 
     # Clear previous events

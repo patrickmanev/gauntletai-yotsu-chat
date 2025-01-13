@@ -26,7 +26,7 @@ class ConnectionManager:
     def __init__(self):
         self._lock = asyncio.Lock()
         self.active_connections: Dict[str, WebSocket] = {}  # Dict of connection_id -> WebSocket
-        self.channel_connections: Dict[int, Set[str]] = {}  # Dict of channel_id -> set of connection_ids
+        self.subscription_groups: Dict[int, Set[str]] = {}  # Dict of channel_id -> set of connection_ids
         self.connection_health: Dict[str, Dict[str, Any]] = {}  # Dict of connection_id -> health info
         self.connection_users: Dict[str, int] = {}  # Dict of connection_id -> user_id
         self.connection_rate_limits: Dict[str, Dict[str, Any]] = {}  # Dict of connection_id -> rate limit info
@@ -122,12 +122,12 @@ class ConnectionManager:
                     self.user_connection_count.pop(user_id)
             
             # Remove from all channels
-            for channel_connections in self.channel_connections.values():
-                channel_connections.discard(connection_id)
+            for subscription_group in self.subscription_groups.values():
+                subscription_group.discard(connection_id)
             
-            # Clean up empty channel sets
-            self.channel_connections = {
-                k: v for k, v in self.channel_connections.items() if v
+            # Clean up empty subscription groups
+            self.subscription_groups = {
+                k: v for k, v in self.subscription_groups.items() if v
             }
             
             # Clean up rate limit info if this was user's last connection
@@ -147,42 +147,42 @@ class ConnectionManager:
         except Exception as e:
             logger.error(f"Error during WebSocket disconnect: {str(e)}")
     
-    async def join_channel(self, connection_id: str, channel_id: int):
-        """Add a WebSocket connection to a channel"""
+    async def subscribe_to_updates(self, connection_id: str, channel_id: int):
+        """Subscribe a WebSocket connection to updates for a channel."""
         async with self._lock:
-            debug_log("WS", f"Joining channel {channel_id} with connection {connection_id}")
+            debug_log("WS", f"Subscribing connection {connection_id} to updates for channel {channel_id}")
             debug_log("WS", f"├─ Connection exists: {connection_id in self.active_connections}")
-            debug_log("WS", f"├─ Channel exists: {channel_id in self.channel_connections}")
-            debug_log("WS", f"├─ Current channel_connections: {self.channel_connections}")
+            debug_log("WS", f"├─ Subscription group exists: {channel_id in self.subscription_groups}")
+            debug_log("WS", f"├─ Current subscription_groups: {self.subscription_groups}")
             debug_log("WS", f"├─ Current active_connections: {list(self.active_connections.keys())}")
             debug_log("WS", f"├─ Current connection_users: {self.connection_users}")
             
-            if channel_id not in self.channel_connections:
-                debug_log("WS", f"├─ Creating new channel set for channel {channel_id}")
-                self.channel_connections[channel_id] = set()
-                debug_log("WS", f"├─ Channel set created: {self.channel_connections[channel_id]}")
+            if channel_id not in self.subscription_groups:
+                debug_log("WS", f"├─ Creating new subscription group for channel {channel_id}")
+                self.subscription_groups[channel_id] = set()
+                debug_log("WS", f"├─ Subscription group created: {self.subscription_groups[channel_id]}")
             
-            self.channel_connections[channel_id].add(connection_id)
-            debug_log("WS", f"└─ Added connection {connection_id} to channel {channel_id}, total connections: {len(self.channel_connections[channel_id])}")
-            debug_log("WS", f"  └─ Final channel_connections state: {self.channel_connections}")
-            logger.info(f"Added connection {connection_id} to channel {channel_id}, total connections: {len(self.channel_connections[channel_id])}")
+            self.subscription_groups[channel_id].add(connection_id)
+            debug_log("WS", f"└─ Added connection {connection_id} to subscription group {channel_id}, total subscribers: {len(self.subscription_groups[channel_id])}")
+            debug_log("WS", f"  └─ Final subscription_groups state: {self.subscription_groups}")
+            logger.info(f"Added connection {connection_id} to subscription group {channel_id}, total subscribers: {len(self.subscription_groups[channel_id])}")
     
-    async def leave_channel(self, connection_id: str, channel_id: int):
-        """Remove a WebSocket connection from a channel"""
+    async def unsubscribe_from_updates(self, connection_id: str, channel_id: int):
+        """Unsubscribe a WebSocket connection from channel updates."""
         async with self._lock:
-            if channel_id in self.channel_connections:
-                self.channel_connections[channel_id].discard(connection_id)
-                if not self.channel_connections[channel_id]:
-                    del self.channel_connections[channel_id]
-                logger.info(f"Removed connection {connection_id} from channel {channel_id}")
+            if channel_id in self.subscription_groups:
+                self.subscription_groups[channel_id].discard(connection_id)
+                if not self.subscription_groups[channel_id]:
+                    del self.subscription_groups[channel_id]
+                logger.info(f"Removed connection {connection_id} from subscription group {channel_id}")
     
-    async def broadcast_to_channel(self, channel_id: int, message: dict) -> None:
-        """Broadcast a message to all connections in a channel."""
+    async def broadcast_to_subscribers(self, channel_id: int, message: dict) -> None:
+        """Broadcast a message to all subscribers of a channel."""
         # Initialize channel if needed
         await self.initialize_channel(channel_id)
         
         # Get active connections for channel
-        connections = self.channel_connections.get(channel_id, set())
+        connections = self.subscription_groups.get(channel_id, set())
         if not connections:
             debug_log("WS", f"No clients connected to channel {channel_id} for broadcast")
             return
@@ -190,11 +190,11 @@ class ConnectionManager:
         async with self._lock:
             logger.info(f"Broadcasting to channel {channel_id}")
             
-            if channel_id not in self.channel_connections:
+            if channel_id not in self.subscription_groups:
                 logger.warning(f"Attempted to broadcast to non-existent channel {channel_id}")
                 return
             
-            connection_ids = self.channel_connections[channel_id].copy()
+            connection_ids = self.subscription_groups[channel_id].copy()
             if not connection_ids:
                 logger.warning(f"No active connections in channel {channel_id}")
                 return
@@ -361,7 +361,7 @@ class ConnectionManager:
         
         # Clear all state
         self.active_connections.clear()
-        self.channel_connections.clear()
+        self.subscription_groups.clear()
         self.connection_health.clear()
         self.connection_users.clear()
         self.connection_rate_limits.clear()
@@ -386,8 +386,8 @@ class ConnectionManager:
     
     async def initialize_channel(self, channel_id: int) -> None:
         """Initialize a WebSocket channel if it doesn't exist."""
-        if channel_id not in self.channel_connections:
-            self.channel_connections[channel_id] = set()
+        if channel_id not in self.subscription_groups:
+            self.subscription_groups[channel_id] = set()
             debug_log("WS", f"Initialized WebSocket channel {channel_id}")
     
     async def check_rate_limit(self, connection_id: str) -> bool:
@@ -456,7 +456,7 @@ class ConnectionManager:
             debug_log("WS", f"Sent ping to connection {connection_id}")
     
     async def _subscribe_to_existing_channels(self, connection_id: str, user_id: int):
-        """Subscribe a connection to all channels the user is a member of:
+        """Subscribe a connection to updates for all channels the user is a member of:
         1. All public/private channels they're a member of (any role)
         2. All their DM channels
         3. Their notes channel
@@ -489,11 +489,11 @@ class ConnectionManager:
                     channel_id = channel["channel_id"]
                     channel_type = channel["type"]
                     debug_log("WS", f"├─ Subscribing to {channel_type} channel {channel_id}")
-                    await self.join_channel(connection_id, channel_id)
+                    await self.subscribe_to_updates(connection_id, channel_id)
                     debug_log("WS", f"└─── Subscribed to channel {channel_id}")
                 
                 debug_log("WS", f"Channel subscription complete for user {user_id}")
-                debug_log("WS", f"Final channel_connections state: {self.channel_connections}")
+                debug_log("WS", f"Final subscription_groups state: {self.subscription_groups}")
         except Exception as e:
             logger.error(f"Failed to subscribe to existing channels: {str(e)}")
             # Don't raise - this is not critical enough to fail the connection

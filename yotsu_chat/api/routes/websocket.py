@@ -45,15 +45,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     elif message_type == "pong":
                         await manager.handle_pong(connection_id)
                     
-                    elif message_type == "join_channel":
+                    elif message_type == "subscribe":
                         channel_id = message.get("data", {}).get("channel_id")
                         if channel_id is not None:
-                            await manager.join_channel(connection_id, channel_id)
+                            await manager.subscribe_to_updates(connection_id, channel_id)
                     
-                    elif message_type == "leave_channel":
+                    elif message_type == "unsubscribe":
                         channel_id = message.get("data", {}).get("channel_id")
                         if channel_id is not None:
-                            await manager.leave_channel(connection_id, channel_id)
+                            await manager.unsubscribe_from_updates(connection_id, channel_id)
                     
                     else:
                         logger.warning(f"Unknown message type from connection {connection_id}: {message_type}")
