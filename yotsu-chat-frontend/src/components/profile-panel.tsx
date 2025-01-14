@@ -1,5 +1,5 @@
 import { X } from 'lucide-react'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/client/avatar'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 
 interface ProfilePanelProps {
   profile: {
@@ -17,7 +17,7 @@ export function ProfilePanel({ profile, onClose }: ProfilePanelProps) {
         <h2 className="font-semibold text-gray-900">Profile</h2>
         <button 
           onClick={onClose} 
-          className="text-gray-500 hover:text-gray-700"
+          className="p-2 rounded-md text-gray-500 hover:bg-gray-200 transition-colors"
         >
           <X className="h-5 w-5" />
         </button>

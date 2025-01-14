@@ -111,7 +111,18 @@ class ChannelService:
                     debug_log("CHANNEL", f"├─ Subscribing user {user_id}'s connection {connection_id} to new DM channel {channel_id}")
                     await ws_manager.subscribe_to_updates(connection_id, channel_id)
                     debug_log("CHANNEL", f"└─ Subscribed user {user_id}'s connection {connection_id}")
-            
+
+            # NEW CODE: Broadcast member.joined for each participant
+            debug_log("CHANNEL", "Broadcasting member.joined event for new DM participants")
+            for uid in [user1_id, user2_id]:
+                member_info = await self.get_member_info(db, channel_id, uid)
+                event = {
+                    "type": "member.joined",
+                    "data": member_info
+                }
+                await ws_manager.broadcast_to_subscribers(channel_id, event)
+                debug_log("CHANNEL", f"│ └─ Broadcasted member.joined for user {uid}")
+
             return channel_id, True
             
         except Exception as e:
@@ -506,7 +517,7 @@ class ChannelService:
             debug_log("CHANNEL", f"└─ Added user {user_id} to channel {channel_id}")
             
             # Subscribe all user's active WebSocket connections to the channel
-            for connection_id, websocket in ws_manager.active_connections.items():
+            for connection_id in ws_manager.active_connections.items():
                 if ws_manager.connection_users.get(connection_id) == user_id:
                     await ws_manager.subscribe_to_updates(connection_id, channel_id)
                     debug_log("CHANNEL", f"└─ Subscribed connection {connection_id} to channel {channel_id}")

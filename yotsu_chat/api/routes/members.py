@@ -82,12 +82,12 @@ async def add_channel_member(
             raise HTTPException(status_code=500, detail="Failed to retrieve member info")
             
         return member_info
-    except (ValueError, HTTPException) as e:
-        if isinstance(e, HTTPException):
-            raise
-        raise HTTPException(status_code=400, detail=str(e))
     except YotsuError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         debug_log("ERROR", f"Failed to add channel member: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to add channel member")

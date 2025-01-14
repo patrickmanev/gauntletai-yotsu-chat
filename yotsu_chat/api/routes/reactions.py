@@ -3,11 +3,9 @@ from ...core.auth import get_current_user
 from ...core.database import get_db
 from ...schemas.reaction import ReactionCreate, ReactionResponse, ReactionCount
 from ...services.reaction_service import reaction_service
-from ...utils import debug_log
 
 import aiosqlite
 from typing import List
-import logging
 
 router = APIRouter(prefix="/reactions", tags=["reactions"])
 

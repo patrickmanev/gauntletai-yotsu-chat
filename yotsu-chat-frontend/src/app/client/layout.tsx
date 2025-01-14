@@ -1,16 +1,15 @@
 'use client'
 
 import { useState } from 'react'
-import { Sidebar } from '@/components/client/sidebar'
-import { TopBar } from '@/components/client/top-bar'
-import { ThreadPanel } from '@/components/client/thread-panel'
-import { ProfilePanel } from '@/components/client/profile-panel'
-import { DirectMessageWindow } from '@/components/client/direct-message-window'
-import { ChannelWindow } from '@/components/client/channel-window'
+import { Sidebar } from '@/components/sidebar'
+import { TopBar } from '@/components/top-bar'
+import { ThreadPanel } from '@/components/thread-panel'
+import { ProfilePanel } from '@/components/profile-panel'
+import { DirectMessageWindow } from '@/components/direct-message-window'
+import { ChannelWindow } from '@/components/channel-window'
 
-type Channel = string
-type ThreadId = string
-type UserProfile = {
+// Define types for our state management
+type User = {
   name: string;
   avatar: string;
   initials: string;
@@ -18,68 +17,97 @@ type UserProfile = {
 
 type ActiveView = {
   type: 'channel' | 'dm';
-  data: Channel | UserProfile;
+  data: string | User;
 }
 
-type ActivePanel = {
+type SidePanel = {
   type: 'thread' | 'profile' | null;
-  data: ThreadId | UserProfile | null;
+  data: string | User | null;
 }
 
 export default function Layout() {
-  const [activeView, setActiveView] = useState<ActiveView>({ type: 'channel', data: 'social-media' })
-  const [activePanel, setActivePanel] = useState<ActivePanel>({ type: null, data: null })
+  // State for managing active view (channel or DM)
+  const [activeView, setActiveView] = useState<ActiveView>({ 
+    type: 'channel', 
+    data: 'social-media'
+  })
+
+  // State for managing side panel (thread or profile)
+  const [sidePanel, setSidePanel] = useState<SidePanel>({ 
+    type: null, 
+    data: null 
+  })
+
+  // Handler for profile clicks
+  const handleProfileClick = (profile: User) => {
+    setSidePanel({ 
+      type: 'profile', 
+      data: profile 
+    })
+  }
+
+  // Handler for thread selection
+  const handleThreadSelect = (threadId: string) => {
+    setSidePanel({ 
+      type: 'thread', 
+      data: threadId 
+    })
+  }
+
+  // Handler for closing side panels
+  const handlePanelClose = () => {
+    setSidePanel({ 
+      type: null, 
+      data: null 
+    })
+  }
 
   return (
     <div className="flex h-screen bg-[#2c0929] text-white">
+      {/* Sidebar */}
       <Sidebar 
         activeView={activeView}
-        onChannelSelect={(channel: Channel) => {
+        onChannelSelect={(channel: string) => {
           setActiveView({ type: 'channel', data: channel })
-          setActivePanel({ type: null, data: null })
+          setSidePanel({ type: null, data: null })
         }}
-        onDMSelect={(user: UserProfile) => {
+        onDMSelect={(user: User) => {
           setActiveView({ type: 'dm', data: user })
-          setActivePanel({ type: null, data: null })
+          setSidePanel({ type: null, data: null })
         }}
-        onProfileClick={(profile: UserProfile) => {
-          setActivePanel({ type: 'profile', data: profile })
-        }}
+        onProfileClick={handleProfileClick}
       />
+
+      {/* Main Content Area */}
       <div className="flex-1 flex flex-col">
         <TopBar />
         <div className="flex-1 flex">
+          {/* Main Window (Channel or DM) */}
           {activeView.type === 'channel' ? (
             <ChannelWindow 
-              channel={activeView.data as Channel}
-              onThreadSelect={(id: ThreadId) => {
-                setActivePanel({ type: 'thread', data: id })
-              }}
-              onProfileClick={(profile: UserProfile) => {
-                setActivePanel({ type: 'profile', data: profile })
-              }}
+              channel={activeView.data as string}
+              onThreadSelect={handleThreadSelect}
+              onProfileClick={handleProfileClick}
             />
           ) : (
             <DirectMessageWindow 
-              user={activeView.data as UserProfile}
-              onThreadSelect={(id: ThreadId) => {
-                setActivePanel({ type: 'thread', data: id })
-              }}
-              onProfileClick={(profile: UserProfile) => {
-                setActivePanel({ type: 'profile', data: profile })
-              }}
+              user={activeView.data as User}
+              onThreadSelect={handleThreadSelect}
+              onProfileClick={handleProfileClick}
             />
           )}
-          {activePanel.type === 'thread' && (
+
+          {/* Side Panels (Thread or Profile) */}
+          {sidePanel.type === 'thread' && (
             <ThreadPanel 
-              threadId={activePanel.data as ThreadId} 
-              onClose={() => setActivePanel({ type: null, data: null })}
+              threadId={sidePanel.data as string}
+              onClose={handlePanelClose}
             />
           )}
-          {activePanel.type === 'profile' && (
+          {sidePanel.type === 'profile' && (
             <ProfilePanel 
-              profile={activePanel.data as UserProfile}
-              onClose={() => setActivePanel({ type: null, data: null })}
+              profile={sidePanel.data as User}
+              onClose={handlePanelClose}
             />
           )}
         </div>

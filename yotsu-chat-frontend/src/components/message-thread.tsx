@@ -1,11 +1,11 @@
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/client/avatar'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { MoreHorizontal } from 'lucide-react'
 import { 
   DropdownMenu, 
   DropdownMenuContent, 
   DropdownMenuItem, 
   DropdownMenuTrigger 
-} from '@/components/client/dropdown-menu'
+} from '@/components/ui/dropdown-menu'
 
 interface MessageThreadProps {
   onThreadSelect: (id: string) => void

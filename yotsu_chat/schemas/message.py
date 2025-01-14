@@ -26,6 +26,7 @@ class MessageResponse(BaseModel):
     edited_at: Optional[datetime] = None
     display_name: str
     parent_id: Optional[int] = None
+    has_reactions: bool = False
 
 class MessageWithAttachments(MessageResponse):
     attachments: List[dict] = [] 

@@ -179,6 +179,14 @@ class MessageService:
         if message_dict["updated_at"]:
             message_dict["updated_at"] = datetime.fromisoformat(message_dict["updated_at"].replace("Z", "+00:00"))
         
+        # Check for reactions
+        async with db.execute(
+            "SELECT COUNT(*) as cnt FROM reactions WHERE message_id = ?",
+            (message_id,)
+        ) as c_cursor:
+            row = await c_cursor.fetchone()
+            message_dict["has_reactions"] = (row["cnt"] > 0)
+
         return message_dict
 
     async def list_messages(
@@ -280,6 +288,23 @@ class MessageService:
         combined_messages = top_level_messages + child_messages
         combined_messages.sort(key=lambda m: m["message_id"], reverse=True)
 
+        # Gather IDs for all messages in combined_messages
+        all_message_ids = [m["message_id"] for m in combined_messages]
+        if all_message_ids:
+            placeholders = ",".join("?" for _ in all_message_ids)
+            reactions_query = f"""
+                SELECT message_id, COUNT(*) as cnt
+                FROM reactions
+                WHERE message_id IN ({placeholders})
+                GROUP BY message_id
+            """
+            async with db.execute(reactions_query, all_message_ids) as rc_cursor:
+                reaction_counts = {row["message_id"]: row["cnt"] for row in await rc_cursor.fetchall()}
+
+            # Set has_reactions = True if count > 0
+            for m in combined_messages:
+                m["has_reactions"] = (reaction_counts.get(m["message_id"], 0) > 0)
+        
         return combined_messages
 
     async def update_message(
@@ -308,8 +333,17 @@ class MessageService:
         )
         await db.commit()
         
-        # Get updated message for response and broadcast
+        # Optionally, do a quick check for reactions here if you want to maintain the data in memory:
+        async with db.execute(
+            "SELECT COUNT(*) as cnt FROM reactions WHERE message_id = ?",
+            (message_id,)
+        ) as c_cursor:
+            row = await c_cursor.fetchone()
+            has_reactions_now = (row["cnt"] > 0)
+
+        # Get updated message for response
         updated_message = await self.get_message(db, message_id, user_id)
+        updated_message["has_reactions"] = has_reactions_now
         
         # Broadcast update
         await ws_manager.broadcast_to_subscribers(
