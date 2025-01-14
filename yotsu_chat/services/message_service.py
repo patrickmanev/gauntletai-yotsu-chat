@@ -190,51 +190,97 @@ class MessageService:
         limit: int = 50,
         parent_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """List messages in a channel with pagination and thread filtering.
-        
-        Access control:
-        - Public channels: Anyone can list messages
-        - Private/DM/Notes channels: Only members can list messages
         """
-        debug_log("MSG", f"Listing messages in channel {channel_id}")
-        
-        # Verify channel access (require_membership=False allows anyone to read public channels)
+        List messages in a channel;
+        - If parent_id is set, return ALL replies to that parent (no pagination).
+        - If parent_id is None, return up to {limit} top-level (parent_id IS NULL) messages
+          in descending order by message_id but also fetch and attach all replies
+          for those top-level messages (unpaged).
+
+        The main difference from the original version is that top-level results
+        are paged, but each top-level message's children are returned in full.
+        """
+        debug_log("MSG", f"Listing messages in channel {channel_id}. parent_id={parent_id}")
+
+        # Verify channel access (require_membership=False allows reading public channels)
         await self._verify_channel_access(db, channel_id, user_id, require_membership=False)
-        
-        # Build query
-        query = """
-            SELECT m.*, u.display_name
-            FROM messages m
-            JOIN users u ON m.user_id = u.user_id
-            WHERE m.channel_id = ?
-        """
-        params: List[Any] = [channel_id]
-        
-        # Filter by thread if specified
+
+        # If we are fetching a specific thread, return all replies (thread messages).
         if parent_id is not None:
-            # Check if parent exists
             async with db.execute(
                 "SELECT 1 FROM messages WHERE message_id = ? AND channel_id = ?",
                 (parent_id, channel_id)
             ) as cursor:
                 if not await cursor.fetchone():
                     raise ValueError("Parent message not found")
-            
-            query += " AND m.parent_id = ?"
-            params.append(parent_id)
-        else:
-            query += " AND m.parent_id IS NULL"  # Only get top-level messages
-        
+
+            query = """
+                SELECT m.*, u.display_name
+                FROM messages m
+                JOIN users u ON m.user_id = u.user_id
+                WHERE m.channel_id = ?
+                  AND m.parent_id = ?
+                ORDER BY m.message_id DESC
+            """
+            params = [channel_id, parent_id]
+
+            async with db.execute(query, params) as cursor:
+                messages = await cursor.fetchall()
+                return [dict(msg) for msg in messages]
+
+        # Otherwise, fetch top-level messages (parent_id IS NULL),
+        # optionally applying 'before', then fetch all replies for
+        # these top-level messages.
+        top_level_query = """
+            SELECT m.*, u.display_name
+            FROM messages m
+            JOIN users u ON m.user_id = u.user_id
+            WHERE m.channel_id = ?
+              AND m.parent_id IS NULL
+        """
+        top_level_params = [channel_id]
+
         if before:
-            query += " AND m.message_id < ?"
-            params.append(before)
-        
-        query += " ORDER BY m.message_id DESC LIMIT ?"
-        params.append(limit)
-        
-        async with db.execute(query, params) as cursor:
-            messages = await cursor.fetchall()
-            return [dict(msg) for msg in messages]
+            top_level_query += " AND m.message_id < ?"
+            top_level_params.append(before)
+
+        top_level_query += " ORDER BY m.message_id DESC LIMIT ?"
+        top_level_params.append(limit)
+
+        async with db.execute(top_level_query, top_level_params) as cursor:
+            top_level_records = await cursor.fetchall()
+            top_level_messages = [dict(r) for r in top_level_records]
+
+        # If no top-level messages, we can return empty result immediately
+        if not top_level_messages:
+            return []
+
+        # Collect all top-level IDs
+        top_level_ids = [msg["message_id"] for msg in top_level_messages]
+
+        # Fetch all replies for these top-level messages (any message whose parent_id is in top_level_ids)
+        # We'll do a single query to get them all.
+        placeholders = ",".join("?" for _ in top_level_ids)
+        child_query = f"""
+            SELECT m.*, u.display_name
+            FROM messages m
+            JOIN users u ON m.user_id = u.user_id
+            WHERE m.channel_id = ?
+              AND m.parent_id IN ({placeholders})
+            ORDER BY m.message_id DESC
+        """
+        child_params = [channel_id] + top_level_ids
+
+        async with db.execute(child_query, child_params) as cursor:
+            child_records = await cursor.fetchall()
+            child_messages = [dict(r) for r in child_records]
+
+        # Combine top-level + child messages into one list so the caller sees them all.
+        # We'll return them in descending order of message_id (which the test examples rely on).
+        combined_messages = top_level_messages + child_messages
+        combined_messages.sort(key=lambda m: m["message_id"], reverse=True)
+
+        return combined_messages
 
     async def update_message(
         self,

@@ -4,7 +4,6 @@ from ...core.auth import get_current_user
 from ...core.database import get_db
 from ...schemas.message import MessageCreate, MessageResponse, MessageUpdate, MessageWithAttachments
 from ...services.message_service import message_service
-from ...services.attachment_service import attachment_service
 from ...utils import debug_log
 
 import aiosqlite
@@ -84,15 +83,9 @@ async def list_messages(
             parent_id=parent_id
         )
         
-        # Get attachments for messages
-        result = []
-        for msg in messages:
-            attachments = await attachment_service.get_message_attachments(
-                db=db,
-                message_id=msg["message_id"]
-            )
-            
-            result.append(MessageWithAttachments(
+        # Convert to MessageWithAttachments (no attachments for now)
+        result = [
+            MessageWithAttachments(
                 message_id=msg["message_id"],
                 channel_id=msg["channel_id"],
                 user_id=msg["user_id"],
@@ -101,8 +94,10 @@ async def list_messages(
                 edited_at=msg["updated_at"],
                 display_name=msg["display_name"],
                 parent_id=msg["parent_id"],
-                attachments=attachments
-            ))
+                attachments=[]  # Empty list since attachments are not implemented yet
+            )
+            for msg in messages
+        ]
         
         return result
     except ValueError as e:

@@ -23,11 +23,20 @@ var/
 yotsu-chat-venv/
 
 # Node
-.node_modules/
-.next/
+**/node_modules/
+**/.next/
 .npm
 .env.local
 .env*.local
+/out/
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+/coverage
 
 # IDE
 .vscode/
@@ -39,13 +48,27 @@ yotsu-chat-venv/
 # OS
 .DS_Store
 Thumbs.db 
+*.pem
 
 # Data
 data/
 *.db
 
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
 # Tests
 .pytest_cache/
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
 
 # Temp exclusions
 webapp-old/
