@@ -15,6 +15,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Yotsu Chat",
   description: "A chat app for kids raised on the internet!",
+  icons: {
+    icon: '/favicon.ico',
+  },
 };
 
 export default function RootLayout({
