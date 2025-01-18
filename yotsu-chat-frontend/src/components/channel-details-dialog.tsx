@@ -1,5 +1,7 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { DisplayName } from './display-name'
+
 import { 
   DropdownMenu, 
   DropdownMenuContent, 
@@ -56,7 +58,7 @@ export function ChannelDetailsDialog({
                       <AvatarImage src="/placeholder.svg" />
                       <AvatarFallback>{member.initials}</AvatarFallback>
                     </Avatar>
-                    <span className="text-sm">{member.name}</span>
+                    <DisplayName name={member.name} isOnline={true} />
                   </div>
                   <div className="flex items-center gap-2">
                     {member.role && (
@@ -125,4 +127,3 @@ export function ChannelDetailsDialog({
     </>
   )
 }
-

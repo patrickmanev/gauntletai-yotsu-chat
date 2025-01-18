@@ -4,11 +4,9 @@ from typing import Dict, Any, List
 import uuid
 import json
 from yotsu_chat.core.ws_core import manager as ws_manager, WebSocketError
-from yotsu_chat.utils import debug_log
 from tests.conftest import MockWebSocket, register_test_user
 import asyncio
 from datetime import datetime, timedelta, UTC
-from contextlib import suppress
 
 # Helper function to get presence events from a websocket
 def get_presence_events(websocket) -> List[Dict[str, Any]]:

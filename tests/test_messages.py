@@ -1,9 +1,8 @@
 import pytest
 from httpx import AsyncClient
-from typing import Dict, Any, List
-from pydantic import BaseModel
-import json
-from tests.conftest import register_test_user
+from typing import Dict, Any, List, Optional
+from pydantic import BaseModel, model_validator
+from datetime import datetime
 
 pytestmark = pytest.mark.asyncio
 
@@ -23,9 +22,11 @@ class MessageResponse(BaseModel):
     user_id: int
     content: str
     parent_id: int | None
-    created_at: str
-    edited_at: str | None
+    created_at: datetime
+    updated_at: datetime | None
     display_name: str
+    has_reactions: bool = False
+    is_deleted: bool = False
 
 class ChannelCreate(BaseModel):
     name: str | None = None
@@ -34,11 +35,27 @@ class ChannelCreate(BaseModel):
 
 class ChannelResponse(BaseModel):
     channel_id: int
-    name: str | None
+    name: Optional[str] = None
     type: str
-    created_at: str
-    is_member: bool
-    role: str | None = None
+    created_at: Optional[datetime] = None
+    created_by: Optional[int] = None
+
+    @model_validator(mode='after')
+    def validate_name_based_on_type(self) -> 'ChannelResponse':
+        """Validate name field based on channel type."""
+        if self.type in ["dm", "notes"]:
+            if self.name is not None:
+                raise ValueError("DM and Notes channels must not have a name")
+            # Ensure creation metadata is null for DM/Notes
+            self.created_at = None
+            self.created_by = None
+        elif self.type in ["public", "private"]:
+            if not self.name:
+                raise ValueError("Public and Private channels must have a name")
+            # Ensure creation metadata exists for Public/Private
+            if not self.created_at or not self.created_by:
+                raise ValueError("Public and Private channels must have creation metadata")
+        return self
 
 async def test_public_channel_message_operations(
     client: AsyncClient,

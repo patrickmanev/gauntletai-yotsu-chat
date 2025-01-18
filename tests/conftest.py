@@ -7,7 +7,6 @@ os.environ["YOTSU_JWT_REFRESH_TOKEN_SECRET_KEY"] = "test-refresh-secret"
 os.environ["YOTSU_JWT_TEMP_TOKEN_SECRET_KEY"] = "test-temp-secret"
 
 # Now we can safely import everything else
-from pathlib import Path
 import aiosqlite
 import asyncio
 from typing import AsyncGenerator, Dict, Any, Union, List
@@ -15,14 +14,13 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 from fastapi.testclient import TestClient
-from fastapi.routing import APIRoute, APIWebSocketRoute
 import pyotp
 import jwt
 import json
 
 from yotsu_chat.main import app
 from yotsu_chat.core.database import init_db
-from yotsu_chat.core.config import get_settings, Settings, EnvironmentMode
+from yotsu_chat.core.config import get_settings
 
 # Get settings instance (will be in test mode due to environment variable)
 settings = get_settings()
@@ -420,22 +418,31 @@ async def mock_websocket(access_token: str) -> AsyncGenerator[Dict[str, Any], No
     await ws_manager.disconnect(connection_id)
 
 @pytest_asyncio.fixture
-async def concurrent_websockets(access_token: str) -> AsyncGenerator[List[Dict[str, Any]], None]:
+async def concurrent_websockets(client: AsyncClient) -> AsyncGenerator[List[Dict[str, Any]], None]:
     """Create multiple WebSocket connections for concurrent testing"""
     connections = []
-    for _ in range(3):  # Create 3 concurrent connections
+    for i in range(3):  # Create 3 concurrent connections
+        # Create a unique user for each connection
+        user_data = await register_test_user(
+            client,
+            email=f"concurrent{i+1}@example.com",
+            password="Password1234!",
+            display_name=f"User {chr(65 + i)}"  # A, B, C
+        )
+        
         ws = MockWebSocket()
-        ws.query_params["token"] = access_token
+        ws.query_params["token"] = user_data["access_token"]
         connection_id = str(uuid.uuid4())
         
         # Connect and authenticate
         user_id = await ws_manager.authenticate_connection(ws)
-        await ws_manager.connect(ws, user_id, connection_id)
+        await ws_manager.connect(ws, user_id, connection_id)  # This triggers auto-subscription
         
         connections.append({
             "websocket": ws,
             "connection_id": connection_id,
-            "user_id": user_id
+            "user_id": user_id,
+            "token": user_data["access_token"]  # Store the token for later use
         })
     
     yield connections
@@ -443,3 +450,14 @@ async def concurrent_websockets(access_token: str) -> AsyncGenerator[List[Dict[s
     # Cleanup
     for conn in connections:
         await ws_manager.disconnect(conn["connection_id"]) 
+
+@pytest_asyncio.fixture(autouse=True)
+async def cleanup_manager() -> None:
+    """Cleanup the WebSocket manager after each test"""
+    yield
+    await ws_manager.cleanup()
+    ws_manager._health_check_task = None
+    ws_manager.active_connections.clear()
+    ws_manager.subscription_groups.clear()
+    ws_manager.connection_health.clear()
+    ws_manager.connection_rate_limits.clear() 

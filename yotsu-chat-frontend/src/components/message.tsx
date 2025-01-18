@@ -1,5 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { MessageSquare, Smile, Pencil, Trash2 } from 'lucide-react'
+import { DisplayName } from './display-name'
 
 interface MessageProps {
   user: {
@@ -33,7 +34,7 @@ export function Message({ user, timestamp, content, onProfileClick, onClick, isI
         </button>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-gray-900">{user.name}</span>
+            <DisplayName name={user.name} isOnline={false} />
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-500">{timestamp}</span>
               <div className="hidden group-hover/message:flex items-center gap-1">
@@ -90,4 +91,3 @@ export function Message({ user, timestamp, content, onProfileClick, onClick, isI
     </div>
   )
 }
-

@@ -54,10 +54,11 @@ async def create_message(
             user_id=message_data["user_id"],
             content=message_data["content"],
             created_at=message_data["created_at"],
-            edited_at=message_data["updated_at"],
+            updated_at=message_data["updated_at"],
             display_name=message_data["display_name"],
             parent_id=message_data["parent_id"],
-            has_reactions=message_data.get("has_reactions", False)
+            has_reactions=message_data.get("has_reactions", False),
+            is_deleted=message_data["is_deleted"]
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -89,10 +90,11 @@ async def list_messages(
                 user_id=msg["user_id"],
                 content=msg["content"],
                 created_at=msg["created_at"],
-                edited_at=msg["updated_at"],
+                updated_at=msg["updated_at"],
                 display_name=msg["display_name"],
                 parent_id=msg["parent_id"],
-                has_reactions=msg.get("has_reactions", False)
+                has_reactions=msg.get("has_reactions", False),
+                is_deleted=msg["is_deleted"]
             )
             for msg in messages
         ]
@@ -125,10 +127,11 @@ async def update_message(
             user_id=message_data["user_id"],
             content=message_data["content"],
             created_at=message_data["created_at"],
-            edited_at=message_data["updated_at"],
+            updated_at=message_data["updated_at"],
             display_name=message_data["display_name"],
             parent_id=message_data["parent_id"],
-            has_reactions=message_data.get("has_reactions", False)
+            has_reactions=message_data.get("has_reactions", False),
+            is_deleted=message_data["is_deleted"]
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

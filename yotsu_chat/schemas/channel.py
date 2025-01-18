@@ -1,6 +1,6 @@
 from enum import Enum
-from pydantic import BaseModel, Field, validator, model_validator
-from typing import Optional, List
+from pydantic import BaseModel, Field, model_validator
+from typing import Optional, List, Union
 from datetime import datetime
 import re
 from yotsu_chat.core.config import get_settings
@@ -67,66 +67,63 @@ class ChannelCreate(BaseModel):
 
 class ChannelUpdate(BaseModel):
     name: str
-    channel_type: ChannelType  # Used for validation only, not for updates
 
     @model_validator(mode='after')
     def validate_update_fields(self) -> 'ChannelUpdate':
         """Validate channel name format."""
-        # Validate name format
         validate_channel_name(self.name)
         return self
 
 class ChannelMember(BaseModel):
     user_id: int
     display_name: str
+    channel_id: int
     role: Optional[ChannelRole] = None
     joined_at: datetime
-    channel_type: ChannelType
 
     @model_validator(mode='after')
     def validate_role_based_on_type(self) -> 'ChannelMember':
-        """Validate roles only for private channels."""
-        if self.channel_type == ChannelType.PRIVATE:
-            if not self.role:
-                raise ValueError("Private channel members must have a role")
-            if self.role not in [ChannelRole.OWNER, ChannelRole.ADMIN, ChannelRole.MEMBER]:
-                raise ValueError("Invalid role for private channel member")
-        elif self.channel_type != ChannelType.PRIVATE:
-            self.role = None
+        """Roles are only used in private channels, will be None otherwise."""
+        if self.role is not None and self.role not in [ChannelRole.OWNER, ChannelRole.ADMIN, ChannelRole.MEMBER]:
+            raise ValueError("Invalid role for channel member")
         return self
 
 class ChannelResponse(BaseModel):
     channel_id: int
     name: Optional[str] = None
     type: ChannelType
-    role: Optional[ChannelRole] = None
-    created_at: datetime
-    created_by: int
-    is_member: bool = True
+    created_at: Optional[datetime] = None
+    created_by: Optional[int] = None
 
     @model_validator(mode='after')
-    def validate_role_based_on_type(self) -> 'ChannelResponse':
-        """Validate roles only for private channels."""
-        if self.type == ChannelType.PRIVATE and self.is_member:
-            if not self.role:
-                raise ValueError("Private channel members must have a role")
-            if self.role not in [ChannelRole.OWNER, ChannelRole.ADMIN, ChannelRole.MEMBER]:
-                raise ValueError("Invalid role for private channel member")
-        elif self.type != ChannelType.PRIVATE:
-            self.role = None
-        return self
-
-class ChannelMemberUpdate(BaseModel):
-    """Schema for updating a member's role in a channel."""
-    role: ChannelRole = Field(..., description="The new role to assign to the member")
-
-    @model_validator(mode='after')
-    def validate_role(self) -> 'ChannelMemberUpdate':
-        """Validate that the role is a valid enum value."""
-        if not isinstance(self.role, ChannelRole):
-            raise ValueError("Invalid role value")
+    def validate_name_based_on_type(self) -> 'ChannelResponse':
+        """Validate name field based on channel type."""
+        if self.type in [ChannelType.DM, ChannelType.NOTES]:
+            if self.name is not None:
+                raise ValueError("DM and Notes channels must not have a name")
+            # Ensure creation metadata is null for DM/Notes
+            self.created_at = None
+            self.created_by = None
+        elif self.type in [ChannelType.PUBLIC, ChannelType.PRIVATE]:
+            # Validate name format using validate_channel_name
+            if self.name:
+                self.name = validate_channel_name(self.name)
+            else:
+                raise ValueError("Public and Private channels must have a name")
+            # Ensure creation metadata exists for Public/Private
+            if not self.created_at or not self.created_by:
+                raise ValueError("Public and Private channels must have creation metadata")
         return self
 
 class ChannelMemberCreate(BaseModel):
     """Schema for adding a member to a channel."""
     user_id: int 
+
+class AddMemberRequest(BaseModel):
+    """Request model for adding one or more members to a channel."""
+    user_ids: Union[int, List[int]]
+
+class PublicChannelListResponse(BaseModel):
+    """Minimal response model for listing public channels."""
+    channel_id: int
+    name: str

@@ -9,6 +9,7 @@ from ...core.config import get_settings
 from ...services.auth_service import auth_service
 from ...services.token_service import token_service
 from ...utils import debug_log
+from ...utils.validation import verify_users_exist
 import aiosqlite
 from jose import JWTError, ExpiredSignatureError
 from datetime import datetime, UTC
@@ -325,7 +326,10 @@ async def refresh_token(
             raise HTTPException(status_code=401, detail="Invalid refresh token")
         
         # Check if user exists
-        await channel_service.verify_user_exists(db, user_id)
+        missing_users = await verify_users_exist(db, user_id)
+        if missing_users:
+            debug_log("AUTH", f"User {user_id} does not exist")
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
         
         # Get user info
         async with db.execute(

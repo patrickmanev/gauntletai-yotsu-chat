@@ -10,6 +10,8 @@ type AuthSlice = {
   accessToken: string | null
   isAuthenticated: boolean
   userId: number | null
+  tempToken: string | null
+  is2FARequired: boolean
   login: (creds: { email: string; password: string }) => Promise<void>
   logout: () => void
   refreshTokens: () => Promise<void>
@@ -100,48 +102,129 @@ type AppStore = AuthSlice &
 // 2) Slice Creators
 // -------------------------------------------------------------------
 
+// Types for the auth slice
+interface AuthState {
+  accessToken: string | null
+  isAuthenticated: boolean
+  userId: number | null
+  tempToken: string | null
+  is2FARequired: boolean
+}
+
+interface LoginCredentials {
+  email: string
+  password: string
+}
+
+interface TOTPVerification {
+  totp_code: string
+}
+
 // AUTH SLICE
-// In practice, you’d replace console.log with real fetches to the backend
 const createAuthSlice = (set: any, get: any): AuthSlice => ({
+  // State
   accessToken: null,
   isAuthenticated: false,
   userId: null,
+  tempToken: null,
+  is2FARequired: false,
 
-  login: async ({ email, password }) => {
+  // Actions
+  login: async ({ email, password }: LoginCredentials) => {
     try {
-      // Example for retrieving tokens from an /auth/login endpoint
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
       })
-      if (!response.ok) throw new Error('Failed to log in')
 
-      // This is a simplified example. If 2FA is required, we'd handle temp_token logic, etc.
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.detail?.message || 'Failed to log in')
+      }
+
       const data = await response.json()
 
-      // Suppose we received { access_token, refresh_token, user_id, etc. }
-      if (data.access_token) {
-        set((state: AuthSlice) => {
-          state.accessToken = data.access_token
-          state.isAuthenticated = true
-          state.userId = data.user_id
-        })
-        // Store refresh token in localStorage
-        if (data.refresh_token) localStorage.setItem('refresh_token', data.refresh_token)
+      // If we get a temp_token, 2FA is required
+      if (data.temp_token) {
+        set((state: AuthState) => ({
+          ...state,
+          tempToken: data.temp_token,
+          is2FARequired: true
+        }))
+        return { requires2FA: true }
       }
+
+      // Direct login (test mode)
+      if (data.access_token) {
+        set((state: AuthState) => ({
+          ...state,
+          accessToken: data.access_token,
+          isAuthenticated: true,
+          userId: data.user_id,
+          tempToken: null,
+          is2FARequired: false
+        }))
+        
+        if (data.refresh_token) {
+          localStorage.setItem('refresh_token', data.refresh_token)
+        }
+      }
+
+      return { requires2FA: false }
     } catch (err) {
       console.error('Login error:', err)
       throw err
     }
   },
 
+  verify2FA: async ({ totp_code }: TOTPVerification) => {
+    try {
+      const { tempToken } = get()
+      if (!tempToken) throw new Error('No temporary token available')
+
+      const response = await fetch('/api/auth/verify-2fa', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${tempToken}`
+        },
+        body: JSON.stringify({ totp_code })
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.detail?.message || 'Failed to verify 2FA')
+      }
+
+      const data = await response.json()
+
+      set((state: AuthState) => ({
+        ...state,
+        accessToken: data.access_token,
+        isAuthenticated: true,
+        tempToken: null,
+        is2FARequired: false
+      }))
+
+      if (data.refresh_token) {
+        localStorage.setItem('refresh_token', data.refresh_token)
+      }
+    } catch (err) {
+      console.error('2FA verification error:', err)
+      throw err
+    }
+  },
+
   logout: () => {
-    set((state: AuthSlice) => {
-      state.accessToken = null
-      state.isAuthenticated = false
-      state.userId = null
-    })
+    set((state: AuthState) => ({
+      ...state,
+      accessToken: null,
+      isAuthenticated: false,
+      userId: null,
+      tempToken: null,
+      is2FARequired: false
+    }))
     localStorage.removeItem('refresh_token')
   },
 
@@ -149,46 +232,132 @@ const createAuthSlice = (set: any, get: any): AuthSlice => ({
     try {
       const storedRefreshToken = localStorage.getItem('refresh_token')
       if (!storedRefreshToken) throw new Error('No refresh token stored')
+
       const response = await fetch('/api/auth/refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: storedRefreshToken })
       })
-      if (!response.ok) throw new Error('Refresh token failed')
+
+      if (!response.ok) throw new Error('Token refresh failed')
+      
       const data = await response.json()
 
-      set((state: AuthSlice) => {
-        state.accessToken = data.access_token
-        state.isAuthenticated = true
-      })
-      // Update the stored refresh token if the server returned a new one
+      set((state: AuthState) => ({
+        ...state,
+        accessToken: data.access_token,
+        isAuthenticated: true
+      }))
+
       if (data.refresh_token) {
         localStorage.setItem('refresh_token', data.refresh_token)
       }
     } catch (err) {
       console.error('Token refresh error:', err)
-      get().logout() // Force a logout or re-login flow
+      get().logout()
     }
   },
 
-  setAccessToken: (token: string | null) => {
-    set((state: AuthSlice) => {
-      state.accessToken = token
-      state.isAuthenticated = !!token
-    })
+  verifyToken: async () => {
+    try {
+      const { accessToken } = get()
+      if (!accessToken) throw new Error('No access token')
+
+      const response = await fetch('/api/auth/verify', {
+        headers: { 'Authorization': `Bearer ${accessToken}` }
+      })
+
+      if (!response.ok) throw new Error('Token verification failed')
+      
+      const data = await response.json()
+      
+      if (data.valid) {
+        set((state: AuthState) => ({
+          ...state,
+          userId: data.user_id,
+          isAuthenticated: true
+        }))
+        return true
+      }
+      return false
+    } catch (err) {
+      console.error('Token verification error:', err)
+      get().logout()
+      return false
+    }
   }
 })
 
-// PRESENCE SLICE
-const createPresenceSlice = (set: any): PresenceSlice => ({
-  onlineUsers: {},
+// Types for the presence slice
+interface PresenceState {
+  onlineUsers: Record<number, boolean>
+  isInitialized: boolean
+}
 
-  updatePresence: (userId, online) => {
+interface PresenceUpdate {
+  user_id: number
+  status: 'online' | 'offline'
+}
+
+interface BulkPresenceUpdate {
+  online_users: number[]
+}
+
+// PRESENCE SLICE
+const createPresenceSlice = (set: any, get: any): PresenceSlice => ({
+  // State
+  onlineUsers: {},
+  isInitialized: false,
+
+  // Actions
+  updatePresence: (userId: number, online: boolean) => {
     set(
-      produce((draft: PresenceSlice) => {
-        draft.onlineUsers[userId] = online
+      produce((draft: PresenceState) => {
+        if (online) {
+          draft.onlineUsers[userId] = true
+        } else {
+          delete draft.onlineUsers[userId]
+        }
       })
     )
+  },
+
+  handlePresenceEvent: (data: PresenceUpdate | BulkPresenceUpdate) => {
+    set(
+      produce((draft: PresenceState) => {
+        // Handle bulk presence update (initial presence data)
+        if ('online_users' in data) {
+          // Clear existing presence data
+          draft.onlineUsers = {}
+          // Set all online users
+          data.online_users.forEach(userId => {
+            draft.onlineUsers[userId] = true
+          })
+          draft.isInitialized = true
+        }
+        // Handle individual presence update
+        else if ('user_id' in data) {
+          if (data.status === 'online') {
+            draft.onlineUsers[data.user_id] = true
+          } else {
+            delete draft.onlineUsers[data.user_id]
+          }
+        }
+      })
+    )
+  },
+
+  resetPresence: () => {
+    set(
+      produce((draft: PresenceState) => {
+        draft.onlineUsers = {}
+        draft.isInitialized = false
+      })
+    )
+  },
+
+  isUserOnline: (userId: number): boolean => {
+    return !!get().onlineUsers[userId]
   }
 })
 
@@ -254,8 +423,25 @@ const createChannelsSlice = (set: any, get: any): ChannelsSlice => ({
   },
 
   refreshChannels: async () => {
-    // Re-fetch the entire channel list
-    get().listChannels()
+    try {
+      const accessToken = get().accessToken
+      if (!accessToken) return
+      const resp = await fetch('/api/channels', {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      })
+      if (!resp.ok) throw new Error('Failed to refresh channels')
+      const data: Channel[] = await resp.json()
+      set((store: ChannelsSlice) => {
+        // Replace channels entirely with fresh data
+        const newChannels = data.reduce((map, ch) => {
+          map[ch.channel_id] = ch
+          return map
+        }, {} as Record<number, Channel>)
+        return { channels: newChannels }
+      })
+    } catch (err) {
+      console.error('refreshChannels error:', err)
+    }
   },
 
   updateChannel: async (channelId, payload) => {
@@ -283,24 +469,18 @@ const createChannelsSlice = (set: any, get: any): ChannelsSlice => ({
   },
 
   handleJoinEvent: (channelId, joinedUserId) => {
-    // If it's the current user, re-fetch channel list if not already in the store
-    const userId = get().userId
-    const channelInStore = !!get().channels[channelId]
-
-    if (joinedUserId === userId && !channelInStore) {
-      // Re-fetch the entire channel list
-      get().refreshChannels()
+    const { userId, channels, refreshChannels } = get()
+    // If the joinedUserId is the current user, and store doesn’t have the channel
+    // or wants to do naive refresh, call refreshChannels
+    if (joinedUserId === userId && !channels[channelId]) {
+      refreshChannels()
     }
   },
 
   handleLeaveEvent: (channelId, leftUserId) => {
-    const userId = get().userId
-    const channelInStore = !!get().channels[channelId]
-
-    // If it's the current user leaving, remove the channel from store or re-fetch
-    if (leftUserId === userId && channelInStore) {
-      // Simpler to re-fetch the entire channel list
-      get().refreshChannels()
+    const { userId, channels, refreshChannels } = get()
+    if (leftUserId === userId && channels[channelId]) {
+      refreshChannels()
     }
   }
 })
@@ -313,29 +493,30 @@ const createChannelMemberSlice = (set: any, get: any): ChannelMemberSlice => ({
     try {
       const accessToken = get().accessToken
       if (!accessToken) return
-
       const resp = await fetch(`/api/members/${channelId}`, {
         headers: { Authorization: `Bearer ${accessToken}` }
       })
       if (!resp.ok) throw new Error('Failed to fetch channel members')
-      const members: Member[] = await resp.json()
-
-      set(
-        produce((draft: ChannelMemberSlice) => {
-          draft.membersByChannel[channelId] = members
-        })
-      )
+      const data: Member[] = await resp.json()
+      set((store: ChannelMemberSlice) => {
+        return {
+          membersByChannel: {
+            ...store.membersByChannel,
+            [channelId]: data
+          }
+        }
+      })
     } catch (err) {
       console.error('fetchChannelMembers error:', err)
     }
   },
 
-  clearChannelMembers: (channelId) => {
-    set(
-      produce((draft: ChannelMemberSlice) => {
-        delete draft.membersByChannel[channelId]
-      })
-    )
+  clearChannelMembers: (channelId: number) => {
+    set((store: ChannelMemberSlice) => {
+      const updated = { ...store.membersByChannel }
+      delete updated[channelId]
+      return { membersByChannel: updated }
+    })
   }
 })
 
@@ -560,7 +741,7 @@ const createReactionsSlice = (set: any, get: any): ReactionsSlice => ({
 export const useAppStore = create<AppStore>()(
   devtools((set, get) => ({
     ...createAuthSlice(set, get),
-    ...createPresenceSlice(set),
+    ...createPresenceSlice(set, get),
     ...createChannelsSlice(set, get),
     ...createChannelMemberSlice(set, get),
     ...createMessagesSlice(set, get),

@@ -1,19 +1,22 @@
-from typing import Dict, Set, Optional, Any
-from fastapi import WebSocket, WebSocketDisconnect
+from typing import Dict, Set, Any, TypeVar
+from fastapi import WebSocket
 import json
 import asyncio
-from contextlib import suppress
 from datetime import datetime, timedelta, UTC
-from .auth import decode_token
-from ..utils.errors import YotsuError, ErrorCode
 from ..utils import debug_log
 import logging
 from .config import get_settings
 from websockets.exceptions import InvalidHandshake
 import aiosqlite
+from .ws_events import (
+    WSEvent, create_event,
+    SystemErrorData, PresenceData
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+T = TypeVar('T')
 
 class WebSocketError(InvalidHandshake):
     """Custom WebSocket error that includes close codes for better client handling"""
@@ -176,8 +179,8 @@ class ConnectionManager:
                     del self.subscription_groups[channel_id]
                 logger.info(f"Removed connection {connection_id} from subscription group {channel_id}")
     
-    async def broadcast_to_subscribers(self, channel_id: int, message: dict) -> None:
-        """Broadcast a message to all subscribers of a channel."""
+    async def broadcast_to_subscribers(self, channel_id: int, event: WSEvent[T]) -> None:
+        """Broadcast an event to all subscribers of a channel."""
         # Initialize channel if needed
         await self.initialize_channel(channel_id)
         
@@ -199,11 +202,11 @@ class ConnectionManager:
                 logger.warning(f"No active connections in channel {channel_id}")
                 return
             
-            message_text = json.dumps(message)
+            message_text = event.model_dump_json()
             dead_connections = set()
             success_count = 0
             
-            logger.info(f"Broadcasting to channel {channel_id}: {message}")
+            logger.info(f"Broadcasting to channel {channel_id}: {event.model_dump()}")
             logger.info(f"Active connections in channel: {len(connection_ids)}")
             
             for conn_id in connection_ids:
@@ -227,12 +230,12 @@ class ConnectionManager:
                     
             logger.info(f"Channel broadcast complete: {success_count}/{len(connection_ids)} successful")
     
-    async def broadcast_to_all(self, message: dict) -> None:
-        """Broadcast a message to all active connections."""
-        logger.info(f"Broadcasting to all connections: {message}")
+    async def broadcast_to_all(self, event: WSEvent[T]) -> None:
+        """Broadcast an event to all active connections."""
+        logger.info(f"Broadcasting to all connections: {event.model_dump()}")
         logger.info(f"Total active connections: {len(self.active_connections)}")
         try:
-            message_text = json.dumps(message)
+            message_text = event.model_dump_json()
             dead_connections = set()
             success_count = 0
             
@@ -268,14 +271,9 @@ class ConnectionManager:
         try:
             websocket = self.active_connections.get(connection_id)
             if websocket:
-                error_message = {
-                    "type": "system.error",
-                    "data": {
-                        "code": code,
-                        "message": message
-                    }
-                }
-                await websocket.send_text(json.dumps(error_message))
+                error_data = SystemErrorData(code=code, message=message)
+                event = create_event("system.error", error_data)
+                await websocket.send_text(event.model_dump_json())
                 logger.error(f"Sent error to {connection_id}: {message}")
         except Exception as e:
             logger.error(f"Error sending error message to {connection_id}: {str(e)}")
@@ -370,19 +368,18 @@ class ConnectionManager:
         self.user_connection_count.clear()
         self._health_check_task = None
     
-    async def send_to_connection(self, connection_id: str, message: dict) -> None:
-        """Send a message to a specific connection."""
-        websocket = self.active_connections.get(connection_id)
-        if websocket:
-            try:
-                await websocket.send_json(message)
-                debug_log("WS", f"Successfully sent message to connection {connection_id}")
-            except Exception as e:
-                logger.error(f"Error sending to connection {connection_id}: {e}")
-                # Connection may be dead, remove it
-                await self.disconnect(connection_id)
-        else:
-            logger.warning(f"Attempted to send to non-existent connection {connection_id}")
+    async def send_to_connection(self, connection_id: str, event: WSEvent[T]) -> None:
+        """Send an event to a specific connection."""
+        try:
+            websocket = self.active_connections.get(connection_id)
+            if websocket:
+                await websocket.send_text(event.model_dump_json())
+                debug_log("WS", f"Sent event to connection {connection_id}")
+            else:
+                logger.warning(f"Attempted to send to non-existent connection {connection_id}")
+        except Exception as e:
+            logger.error(f"Error sending to connection {connection_id}: {str(e)}")
+            await self.disconnect(connection_id)
     
     async def initialize_channel(self, channel_id: int) -> None:
         """Initialize a WebSocket channel if it doesn't exist."""
@@ -451,7 +448,8 @@ class ConnectionManager:
         """Send a ping message to a connection"""
         websocket = self.active_connections.get(connection_id)
         if websocket:
-            await websocket.send_text(json.dumps({"type": "ping"}))
+            event = create_event("ping", {})
+            await websocket.send_text(event.model_dump_json())
             self.connection_health[connection_id]["pending_ping"] = True
             debug_log("WS", f"Sent ping to connection {connection_id}")
     
@@ -501,27 +499,21 @@ class ConnectionManager:
     async def send_initial_presence(self, connection_id: str):
         """Send current online users to new connection"""
         try:
-            message = {
-                "type": "presence.initial",
-                "data": {
-                    "online_users": list(self.online_users)
-                }
-            }
-            await self.send_to_connection(connection_id, message)
+            data = PresenceData(online_users=list(self.online_users))
+            event = create_event("presence", data)
+            await self.send_to_connection(connection_id, event)
         except Exception as e:
             logger.error(f"Error sending initial presence: {str(e)}")
     
     async def _broadcast_presence_change(self, user_id: int, is_online: bool):
         """Broadcast presence change to all connections"""
         try:
-            message = {
-                "type": "presence.update",
-                "data": {
-                    "user_id": user_id,
-                    "status": "online" if is_online else "offline"
-                }
-            }
-            await self.broadcast_to_all(message)
+            data = PresenceData(
+                user_id=user_id,
+                status="online" if is_online else "offline"
+            )
+            event = create_event("presence", data)
+            await self.broadcast_to_all(event)
         except Exception as e:
             logger.error(f"Error broadcasting presence change: {str(e)}")
 

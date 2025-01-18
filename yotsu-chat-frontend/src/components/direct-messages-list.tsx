@@ -2,6 +2,7 @@ import { ChevronRight, Plus, X, Check, Search } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { DisplayName } from './display-name'
 import { useState } from 'react'
 
 interface DirectMessagesListProps {
@@ -65,7 +66,7 @@ export function DirectMessagesList({
                   <AvatarImage src="/placeholder.svg" />
                   <AvatarFallback>{user.initials}</AvatarFallback>
                 </Avatar>
-                <span>{user.name}</span>
+                <DisplayName name={user.name} isOnline={true} />
               </button>
             ))}
           </>
@@ -133,4 +134,3 @@ export function DirectMessagesList({
     </>
   )
 }
-

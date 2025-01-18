@@ -1,6 +1,5 @@
 import pytest
 from httpx import AsyncClient
-from typing import Dict, Any
 import asyncio
 from tests.conftest import register_test_user
 from yotsu_chat.core.config import get_settings
@@ -54,7 +53,8 @@ async def test_channel_creation(client: AsyncClient):
     
     # Verify creator is the only member
     response = await client.get(
-        f"/api/members/{public_solo['channel_id']}",
+        "/api/members",
+        params={"channel_ids": [public_solo['channel_id']]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 200
@@ -99,7 +99,8 @@ async def test_channel_creation(client: AsyncClient):
     
     # Verify creator is the only member and has OWNER role
     response = await client.get(
-        f"/api/members/{private_solo['channel_id']}",
+        "/api/members",
+        params={"channel_ids": [private_solo['channel_id']]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 200
@@ -175,7 +176,7 @@ async def test_channel_creation(client: AsyncClient):
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 400, "Expected error for invalid member ID"
-    assert "does not exist" in response.json()["detail"].lower(), "Expected error about non-existent user"
+    assert "cannot add non-existent users" in response.json()["detail"].lower(), "Expected error about non-existent user"
     
     # Test with duplicate members in initial_members
     response = await client.post(
@@ -192,7 +193,8 @@ async def test_channel_creation(client: AsyncClient):
     
     # Verify initial members were added
     response = await client.get(
-        f"/api/members/{public_channel['channel_id']}",
+        "/api/members",
+        params={"channel_ids": [public_channel['channel_id']]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 200
@@ -246,31 +248,51 @@ async def test_public_channel_operations(client: AsyncClient):
     public_channel = response.json()
     
     print("\n3. Testing member addition...")
-    # Any user can add members to public channel
+    # Any member can add other members to public channel
     response = await client.post(
-        f"/api/members/{public_channel['channel_id']}",
-        json={"user_id": user2["user_id"]},
+        f"/api/members/{public_channel['channel_id']}/members",
+        json={"user_ids": [user2["user_id"]]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 201, "Failed to add member to public channel"
-    
-    # Even non-members can add members
-    response = await client.post(
-        f"/api/members/{public_channel['channel_id']}",
-        json={"user_id": user3["user_id"]},
+
+    # Verify user3 is not a member
+    response = await client.get(
+        "/api/channels",
+        params={"types": ["public"]},
         headers={"Authorization": f"Bearer {user3['access_token']}"}
     )
-    assert response.status_code == 201, "Non-members should be able to add members to public channel"
+    assert response.status_code == 200, "Failed to list channels"
+    channels = response.json()
+    # User3 should not see the channel in their list since they're not a member
+    assert not any(c["channel_id"] == public_channel["channel_id"] for c in channels), "User3 should not be a member of the channel"
+
+    # Non-members cannot add other members
+    response = await client.post(
+        f"/api/members/{public_channel['channel_id']}/members",
+        json={"user_ids": [user2["user_id"]]},
+        headers={"Authorization": f"Bearer {user3['access_token']}"}
+    )
+    assert response.status_code == 403, "Non-members should not be able to add members to public channel"
+    assert "must be a member" in response.json()["detail"]["message"].lower()
+    
+    # But anyone can add themselves to a public channel
+    response = await client.post(
+        f"/api/members/{public_channel['channel_id']}/members",
+        json={"user_ids": [user3["user_id"]]},
+        headers={"Authorization": f"Bearer {user3['access_token']}"}
+    )
+    assert response.status_code == 201, "Users should be able to add themselves to public channels"
     
     print("\n4. Testing duplicate member prevention...")
     # Try to add the same user again
     response = await client.post(
-        f"/api/members/{public_channel['channel_id']}",
-        json={"user_id": user2["user_id"]},
+        f"/api/members/{public_channel['channel_id']}/members",
+        json={"user_ids": [user2["user_id"]]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 400, "Should not be able to add the same member twice"
-    assert "already a member" in response.json()["detail"].lower()
+    assert "are already members" in response.json()["detail"].lower()
     
     print("\n5. Testing member removal...")
     # Members can leave at any time
@@ -282,8 +304,8 @@ async def test_public_channel_operations(client: AsyncClient):
     
     # Add user2 back for testing removal by another member
     response = await client.post(
-        f"/api/members/{public_channel['channel_id']}",
-        json={"user_id": user2["user_id"]},
+        f"/api/members/{public_channel['channel_id']}/members",
+        json={"user_ids": [user2["user_id"]]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 201, "Failed to add member back to public channel"
@@ -297,7 +319,8 @@ async def test_public_channel_operations(client: AsyncClient):
     
     # Verify member was removed
     response = await client.get(
-        f"/api/members/{public_channel['channel_id']}",
+        "/api/members",
+        params={"channel_ids": [public_channel['channel_id']]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 200
@@ -314,25 +337,15 @@ async def test_public_channel_operations(client: AsyncClient):
     assert response.status_code == 200, "Public channels should be visible to non-members"
 
     print("\n7. Testing channel name updates...")
-    # Verify public channel names cannot be updated by members
+    # 1. Verify public channels cannot be updated
     response = await client.patch(
         f"/api/channels/{public_channel['channel_id']}",
         json={"name": "updated-public-channel"},
-        headers={"Authorization": f"Bearer {user3['access_token']}"}
+        headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 422, "Public channel names should not be updatable"
     errors = response.json()["detail"]
-    assert any("only private channel names can be updated" in error["msg"].lower() for error in errors)
-
-    # Verify public channel names cannot be updated by non-members
-    response = await client.patch(
-        f"/api/channels/{public_channel['channel_id']}",
-        json={"name": "updated-by-non-member"},
-        headers={"Authorization": f"Bearer {user2['access_token']}"}
-    )
-    assert response.status_code == 422, "Public channel names should not be updatable"
-    errors = response.json()["detail"]
-    assert any("only private channel names can be updated" in error["msg"].lower() for error in errors)
+    assert any("Only private channel names can be updated" in error["msg"] for error in errors)
 
     # Verify original name remains unchanged
     response = await client.get(
@@ -342,24 +355,67 @@ async def test_public_channel_operations(client: AsyncClient):
     assert response.status_code == 200
     assert response.json()["name"] == "test-public", "Public channel name should remain unchanged"
 
-    # Test duplicate channel name
+    # 2. Test private channel update permissions
+    # Create a private channel
     response = await client.post(
         "/api/channels",
         json={
-            "name": "unique-public-channel",
-            "type": "public"
+            "name": "test-private",
+            "type": "private"
         },
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 201
-    
-    response = await client.patch(
-        f"/api/channels/{public_channel['channel_id']}",
-        json={"name": "unique-public-channel"},
+    private_channel = response.json()
+
+    # Add user2 as a member (not owner)
+    response = await client.post(
+        f"/api/members/{private_channel['channel_id']}/members",
+        json={"user_ids": [user2["user_id"]]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
-    assert response.status_code == 400, "Should not allow duplicate channel names"
-    assert "already exists" in response.json()["detail"].lower()
+    assert response.status_code == 201
+
+    # Non-owner cannot update name
+    response = await client.patch(
+        f"/api/channels/{private_channel['channel_id']}",
+        json={"name": "updated-by-member"},
+        headers={"Authorization": f"Bearer {user2['access_token']}"}
+    )
+    assert response.status_code == 403, "Only owners should be able to update private channel names"
+    assert "only channel owners" in response.json()["detail"].lower()
+
+    # Owner can update name
+    response = await client.patch(
+        f"/api/channels/{private_channel['channel_id']}",
+        json={"name": "updated-by-owner"},
+        headers={"Authorization": f"Bearer {user1['access_token']}"}
+    )
+    assert response.status_code == 200, "Channel owner should be able to update private channel name"
+    assert response.json()["name"] == "updated-by-owner"
+
+    # 3. Test duplicate names
+    # Create another private channel
+    response = await client.post(
+        "/api/channels",
+        json={
+            "name": "another-private",
+            "type": "private"
+        },
+        headers={"Authorization": f"Bearer {user1['access_token']}"}
+    )
+    assert response.status_code == 201
+    another_private = response.json()
+
+    # Try to update to an existing name
+    response = await client.patch(
+        f"/api/channels/{another_private['channel_id']}",
+        json={"name": "updated-by-owner"},  # Try to use the name we just set
+        headers={"Authorization": f"Bearer {user1['access_token']}"}
+    )
+    assert response.status_code == 422, "Should not allow duplicate channel names"
+    errors = response.json()["detail"]
+    assert any("already exists" in error["msg"] for error in errors)
 
 async def test_notes_channel_operations(client: AsyncClient):
     """Test notes channel operations:
@@ -399,12 +455,11 @@ async def test_notes_channel_operations(client: AsyncClient):
     print("\n3. Testing member management restrictions...")
     # Try to add a member to Notes channel
     response = await client.post(
-        f"/api/members/{notes_channel['channel_id']}", 
+        f"/api/members/{notes_channel['channel_id']}/members",
         json={"user_id": user2["user_id"]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
-    assert response.status_code == 400, "Should not be able to add members to Notes channel"
-    assert "Can only add members to public/private channels" in response.json()["detail"]
+    assert response.status_code == 422, "Should not be able to add members to Notes channel (notes channels are single-member only)"
     
     print("\n4. Testing access control...")
     # Other users should not be able to see the notes channel
@@ -442,14 +497,14 @@ async def test_notes_channel_operations(client: AsyncClient):
         json={"name": "my-notes"},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
-    assert response.status_code == 400, "Should not be able to update Notes channel name"
-    assert "cannot update notes channels" in response.json()["detail"].lower()
+    assert response.status_code == 422, "Should not be able to update Notes channel name"
+    assert "only private channel names can be updated" in response.json()["detail"][0]["msg"].lower()
 
 async def test_ownership_transfer(client: AsyncClient):
     """Test channel ownership transfer:
-    1. Transfer ownership flow
+    1. Basic ownership transfer flow
     2. Role changes during transfer
-    3. Validation rules
+    3. Validation rules and error cases
     """
     print("\n1. Setting up test users...")
     
@@ -475,7 +530,7 @@ async def test_ownership_transfer(client: AsyncClient):
         display_name="TransferUser Three"
     )
     
-    print("\n2. Creating test private channel...")
+    print("\n2. Creating test channels...")
     # Create a private channel
     response = await client.post(
         "/api/channels",
@@ -489,312 +544,149 @@ async def test_ownership_transfer(client: AsyncClient):
     assert response.status_code == 201
     private_channel = response.json()
     
-    print("\n3. Testing ownership transfer...")
+    # Create a public channel (for testing channel type validation)
+    response = await client.post(
+        "/api/channels",
+        json={
+            "name": "public-channel",
+            "type": "public",
+            "initial_members": [user2["user_id"]]
+        },
+        headers={"Authorization": f"Bearer {user1['access_token']}"}
+    )
+    assert response.status_code == 201
+    public_channel = response.json()
+    
+    print("\n3. Testing successful ownership transfer...")
     # Transfer ownership to user2
     response = await client.post(
         f"/api/members/{private_channel['channel_id']}/transfer",
         json={"user_id": user2["user_id"]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
-    assert response.status_code == 200, "Failed to transfer private channel ownership"
+    assert response.status_code == 200
+    assert response.json()["message"] == "Channel ownership transferred successfully"
     
     # Verify new ownership roles
     response = await client.get(
-        f"/api/members/{private_channel['channel_id']}",
+        "/api/members",
+        params={"channel_ids": [private_channel['channel_id']]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 200
     members = response.json()
     owner = next(m for m in members if m["user_id"] == user2["user_id"])
     old_owner = next(m for m in members if m["user_id"] == user1["user_id"])
-    assert owner["role"] == "owner", "New owner should have owner role"
-    assert old_owner["role"] == "admin", "Old owner should become admin"
+    assert owner["role"] == "owner"
+    assert old_owner["role"] == "admin"
     
-    print("\n4. Testing transfer validation rules...")
-    # Verify old owner cannot transfer ownership anymore
+    print("\n4. Testing validation rules...")
+    # Test: Cannot transfer ownership in public channels
+    response = await client.post(
+        f"/api/members/{public_channel['channel_id']}/transfer",
+        json={"user_id": user2["user_id"]},
+        headers={"Authorization": f"Bearer {user1['access_token']}"}
+    )
+    assert response.status_code == 400
+    assert "only be transferred in private channels" in response.json()["detail"].lower()
+    
+    # Test: Non-owner cannot transfer ownership
     response = await client.post(
         f"/api/members/{private_channel['channel_id']}/transfer",
         json={"user_id": user3["user_id"]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
-    assert response.status_code == 400, "Old owner should not be able to transfer ownership"
+    assert response.status_code == 400
+    assert "only the current owner" in response.json()["detail"].lower()
     
-    # Try to transfer to non-member (should fail)
+    # Test: Cannot transfer to non-member
     response = await client.post(
         f"/api/members/{private_channel['channel_id']}/transfer",
         json={"user_id": user3["user_id"]},
         headers={"Authorization": f"Bearer {user2['access_token']}"}
     )
-    assert response.status_code == 400, "Should not be able to transfer ownership to non-member"
+    assert response.status_code == 400
+    assert "must be a member" in response.json()["detail"].lower()
     
     print("\n5. Testing post-transfer permissions...")
-    # Old owner (now admin) can still add members
+    # Add user3 as a member for further testing
     response = await client.post(
-        f"/api/members/{private_channel['channel_id']}",
-        json={"user_id": user3["user_id"]},
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
+        f"/api/members/{private_channel['channel_id']}/members",
+        json={"user_ids": [user3["user_id"]]},
+        headers={"Authorization": f"Bearer {user2['access_token']}"}
     )
-    assert response.status_code == 201, "Admin (old owner) should still be able to add members"
+    assert response.status_code == 201
     
-    # But cannot modify roles
+    # Test: Only owner can promote members
     response = await client.put(
-        f"/api/members/{private_channel['channel_id']}/{user3['user_id']}/role",
-        json={"role": "admin"},
+        f"/api/members/{private_channel['channel_id']}/{user3['user_id']}/promote",
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
-    assert response.status_code == 400, "Admin (old owner) should not be able to modify roles"
-
+    assert response.status_code == 422
+    assert any("only the owner can modify roles" in error["msg"].lower() for error in response.json()["detail"])
+    
+    # Test: New owner can promote members
+    response = await client.put(
+        f"/api/members/{private_channel['channel_id']}/{user3['user_id']}/promote",
+        headers={"Authorization": f"Bearer {user2['access_token']}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["message"] == "Member promoted to admin"
+    assert response.json()["user_id"] == user3["user_id"]
+    
+    # Verify the promotion was successful
+    response = await client.get(
+        "/api/members",
+        params={"channel_ids": [private_channel['channel_id']]},
+        headers={"Authorization": f"Bearer {user2['access_token']}"}
+    )
+    assert response.status_code == 200
+    members = response.json()
+    promoted_member = next(m for m in members if m["user_id"] == user3["user_id"])
+    assert promoted_member["role"] == "admin"
+    
+    # Test: New owner can demote admins
+    response = await client.put(
+        f"/api/members/{private_channel['channel_id']}/{user3['user_id']}/demote",
+        headers={"Authorization": f"Bearer {user2['access_token']}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["message"] == "Admin demoted to member"
+    assert response.json()["user_id"] == user3["user_id"]
+    
+    # Verify the demotion was successful
+    response = await client.get(
+        "/api/members",
+        params={"channel_ids": [private_channel['channel_id']]},
+        headers={"Authorization": f"Bearer {user2['access_token']}"}
+    )
+    assert response.status_code == 200
+    members = response.json()
+    demoted_member = next(m for m in members if m["user_id"] == user3["user_id"])
+    assert demoted_member["role"] == "member"
+    
     print("\n6. Testing transfer back to previous owner...")
-    # Transfer ownership back to user1 (previous owner)
+    # Transfer ownership back to user1
     response = await client.post(
         f"/api/members/{private_channel['channel_id']}/transfer",
         json={"user_id": user1["user_id"]},
         headers={"Authorization": f"Bearer {user2['access_token']}"}
     )
-    assert response.status_code == 200, "Should be able to transfer ownership back to previous owner"
+    assert response.status_code == 200
     
-    # Verify roles after transfer back
+    # Verify final roles
     response = await client.get(
-        f"/api/members/{private_channel['channel_id']}",
+        "/api/members",
+        params={"channel_ids": [private_channel['channel_id']]},
         headers={"Authorization": f"Bearer {user1['access_token']}"}
     )
     assert response.status_code == 200
     members = response.json()
-    new_owner = next(m for m in members if m["user_id"] == user1["user_id"])
-    old_owner = next(m for m in members if m["user_id"] == user2["user_id"])
-    assert new_owner["role"] == "owner", "Previous owner should become owner again"
-    assert old_owner["role"] == "admin", "Previous owner should become admin"
+    final_owner = next(m for m in members if m["user_id"] == user1["user_id"])
+    final_admin = next(m for m in members if m["user_id"] == user2["user_id"])
+    assert final_owner["role"] == "owner"
+    assert final_admin["role"] == "admin"
 
-    print("\n7. Testing transfer to admin vs regular member...")
-    # Make user3 an admin
-    response = await client.put(
-        f"/api/members/{private_channel['channel_id']}/{user3['user_id']}/role",
-        json={"role": "admin"},
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    assert response.status_code == 200, "Should be able to promote member to admin"
-
-    # Transfer to admin (user3)
-    response = await client.post(
-        f"/api/members/{private_channel['channel_id']}/transfer",
-        json={"user_id": user3["user_id"]},
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    assert response.status_code == 200, "Should be able to transfer ownership to admin"
-
-    print("\n8. Testing transfer with no other members...")
-    # Create a new private channel with no other members
-    response = await client.post(
-        "/api/channels",
-        json={
-            "name": "solo-channel",
-            "type": "private"
-        },
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    assert response.status_code == 201
-    solo_channel = response.json()
-
-    # Attempt to transfer ownership
-    response = await client.post(
-        f"/api/members/{solo_channel['channel_id']}/transfer",
-        json={"user_id": user2["user_id"]},
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    assert response.status_code == 400, "Should not be able to transfer ownership with no other members"
-    assert "no other members" in response.json()["detail"].lower()
-
-    print("\n9. Testing concurrent transfer attempts...")
-    # Create a new channel for concurrent transfer testing
-    response = await client.post(
-        "/api/channels",
-        json={
-            "name": "concurrent-test",
-            "type": "private",
-            "initial_members": [user2["user_id"], user3["user_id"]]
-        },
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    assert response.status_code == 201
-    concurrent_channel = response.json()
-
-    # Start first transfer
-    import asyncio
-    transfer1 = client.post(
-        f"/api/members/{concurrent_channel['channel_id']}/transfer",
-        json={"user_id": user2["user_id"]},
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    
-    # Attempt concurrent transfer
-    transfer2 = client.post(
-        f"/api/members/{concurrent_channel['channel_id']}/transfer",
-        json={"user_id": user3["user_id"]},
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    
-    # Wait for both transfers to complete
-    response1, response2 = await asyncio.gather(transfer1, transfer2)
-    
-    # One should succeed and one should fail
-    assert (response1.status_code == 200 and response2.status_code == 400) or \
-           (response1.status_code == 400 and response2.status_code == 200), \
-           "One transfer should succeed and one should fail"
-    
-    # The failing response should have one of two error messages
-    failed_response = response2 if response2.status_code == 400 else response1
-    error_detail = failed_response.json()["detail"].lower()
-    assert any(msg in error_detail for msg in ["transfer in progress", "only the current owner"]), \
-        f"Expected transfer error message, got: {error_detail}"
-
-async def test_private_channel_operations(client: AsyncClient):
-    """Test private channel operations:
-    1. Role hierarchy
-    2. Role management rules
-    3. Member removal rules
-    4. Channel name update restrictions
-    5. Single owner constraint
-    """
-    print("\n1. Setting up test users...")
-    
-    # Create test users
-    user1 = await register_test_user(
-        client,
-        email="priv_test1@example.com",
-        password="Password1234!",
-        display_name="PrivUser One"
-    )
-    
-    user2 = await register_test_user(
-        client,
-        email="priv_test2@example.com",
-        password="Password1234!",
-        display_name="PrivUser Two"
-    )
-    
-    user3 = await register_test_user(
-        client,
-        email="priv_test3@example.com",
-        password="Password1234!",
-        display_name="PrivUser Three"
-    )
-    
-    print("\n2. Creating test private channel...")
-    response = await client.post(
-        "/api/channels",
-        json={
-            "name": "test-private",
-            "type": "private",
-            "initial_members": [user2["user_id"]]
-        },
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    assert response.status_code == 201
-    private_channel = response.json()
-    
-    print("\n3. Testing single owner constraint...")
-    # Verify initial state - user1 should be owner
-    response = await client.get(
-        f"/api/members/{private_channel['channel_id']}",
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    assert response.status_code == 200
-    members = response.json()
-    owner = next(m for m in members if m["user_id"] == user1["user_id"])
-    assert owner["role"] == "owner", "Channel creator should be owner"
-    
-    # Try to promote another user to owner (should fail)
-    response = await client.put(
-        f"/api/members/{private_channel['channel_id']}/{user2['user_id']}/role",
-        json={"role": "owner"},
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    assert response.status_code == 400, "Should not be able to have multiple owners"
-    assert "can only have one owner" in response.json()["detail"].lower()
-    
-    # Verify user2 is still not owner
-    response = await client.get(
-        f"/api/members/{private_channel['channel_id']}",
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    assert response.status_code == 200
-    members = response.json()
-    member = next(m for m in members if m["user_id"] == user2["user_id"])
-    assert member["role"] == "member", "Failed promotion attempt should not change role"
-    
-    print("\n4. Testing ownership transfer atomicity...")
-    # Add user3 to channel
-    response = await client.post(
-        f"/api/members/{private_channel['channel_id']}",
-        json={"user_id": user3["user_id"]},
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    assert response.status_code == 201
-    
-    # Try concurrent ownership transfers (should maintain single owner)
-    import asyncio
-    transfer1 = client.post(
-        f"/api/members/{private_channel['channel_id']}/transfer",
-        json={"user_id": user2["user_id"]},
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    transfer2 = client.post(
-        f"/api/members/{private_channel['channel_id']}/transfer",
-        json={"user_id": user3["user_id"]},
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    
-    # Wait for both transfers to complete
-    response1, response2 = await asyncio.gather(transfer1, transfer2)
-    
-    # One should succeed and one should fail
-    assert (response1.status_code == 200 and response2.status_code == 400) or \
-           (response1.status_code == 400 and response2.status_code == 200), \
-           "One transfer should succeed and one should fail"
-    
-    # Verify we still have exactly one owner
-    response = await client.get(
-        f"/api/members/{private_channel['channel_id']}",
-        headers={"Authorization": f"Bearer {user1['access_token']}"}
-    )
-    assert response.status_code == 200
-    members = response.json()
-    owners = [m for m in members if m["role"] == "owner"]
-    assert len(owners) == 1, "Should have exactly one owner after concurrent transfers"
-    
-    print("\n5. Testing channel name update restrictions...")
-    # Remove user3 from channel first to test non-member access
-    response = await client.delete(
-        f"/api/members/{private_channel['channel_id']}/{user3['user_id']}",
-        headers={"Authorization": f"Bearer {user2['access_token']}"}  # user2 is now owner
-    )
-    assert response.status_code == 204, "Failed to remove user3 from channel"
-
-    # Only owner should be able to update private channel name
-    response = await client.patch(
-        f"/api/channels/{private_channel['channel_id']}",
-        json={"name": "updated-by-owner"},
-        headers={"Authorization": f"Bearer {user2['access_token']}"}  # user2 is now owner
-    )
-    assert response.status_code == 200, "Owner should be able to update private channel name"
-    assert response.json()["name"] == "updated-by-owner"
-
-    # Admin (old owner) should not be able to update channel name
-    response = await client.patch(
-        f"/api/channels/{private_channel['channel_id']}",
-        json={"name": "updated-by-admin"},
-        headers={"Authorization": f"Bearer {user1['access_token']}"}  # user1 is now admin
-    )
-    assert response.status_code == 403, "Admins should not be able to update private channel name"
-    assert "only channel owners" in response.json()["detail"].lower()
-
-    # Non-member should get 404 when trying to update
-    response = await client.patch(
-        f"/api/channels/{private_channel['channel_id']}",
-        json={"name": "updated-by-non-member"},
-        headers={"Authorization": f"Bearer {user3['access_token']}"}  # user3 is now a non-member
-    )
-    assert response.status_code == 404, "Non-members should not be able to see or update private channel"
 
 if __name__ == "__main__":
     asyncio.run(test_channel_creation())

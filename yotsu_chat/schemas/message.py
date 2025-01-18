@@ -23,10 +23,11 @@ class MessageResponse(BaseModel):
     user_id: int
     content: str
     created_at: datetime
-    edited_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     display_name: str
     parent_id: Optional[int] = None
     has_reactions: bool = False
+    is_deleted: bool = False  # For soft-deleted messages
 
 class MessageWithAttachments(MessageResponse):
     attachments: List[dict] = [] 

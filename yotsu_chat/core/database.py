@@ -1,10 +1,7 @@
 import aiosqlite
-from datetime import datetime
 from typing import AsyncGenerator
 from pathlib import Path
-import asyncio
 import logging
-import os
 
 from .config import get_settings, EnvironmentMode
 from ..utils import debug_log
@@ -272,7 +269,6 @@ async def init_db(force: bool = False):
                     message_id INTEGER NOT NULL,
                     user_id INTEGER NOT NULL,
                     emoji TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (message_id, user_id, emoji),
                     FOREIGN KEY (message_id) REFERENCES messages (message_id),
                     FOREIGN KEY (user_id) REFERENCES users (user_id)

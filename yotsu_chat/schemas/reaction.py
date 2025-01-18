@@ -14,9 +14,11 @@ class ReactionResponse(BaseModel):
     message_id: int
     emoji: str
     user_id: int
-    created_at: str
 
-class ReactionCount(BaseModel):
-    emoji: str
-    count: int
-    users: List[int] 
+class MessageReactions(BaseModel):
+    """Reactions for a single message, mapping emoji to list of user IDs."""
+    reactions: Dict[str, List[int]] = Field(default_factory=dict)
+
+class ReactionsList(BaseModel):
+    """Response model for listing reactions across multiple messages."""
+    reactions: Dict[int, MessageReactions] = Field(default_factory=dict) 
